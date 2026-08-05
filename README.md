@@ -17,7 +17,7 @@
 - Parenting, plus other params
 - 3D decos
 - 3D camera
-- USE A DECO OBJECT INSTEAD
+- USE A DECO OBJECT INSTEAD / done
   - shader rendering
   - Canvases (maybe make it so that you can look at different canvases?)
   - Spritesheets
