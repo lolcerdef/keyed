@@ -1,0 +1,50 @@
+[manifest]
+version = "1.0.0"
+dump_lua = true
+priority = 0
+
+[[patches]]
+[patches.pattern]
+target = "main.lua"
+pattern = '''s = { "key:s" },'''
+position = "after"
+payload = '''
+h = { "key:h" },
+space = { "key:space" },
+'''
+match_indent = true
+
+[[patches]]
+[patches.pattern]
+target = "levelformat/events/Vfx/Deco/deco.lua"
+pattern = '''Event.property(event,'decimal','repeatDelay', 'Beats between repeats', {step = cs:getBeatStep(),optional = true, default = 1})'''
+position = "after"
+payload = '''
+if imgui.Button("Open Keyframe Editor ##keyframer") then
+	_G.keyframeropen = true
+	--cs = bs.load("Keyframer")
+	--cs:init(oldcs.level, oldcs.variant, oldcs.editorBeat)
+end
+'''
+match_indent = true
+
+# i don't care anymore
+[[patches]]
+[patches.pattern]
+target = "main.lua"
+pattern = '''function love.update(d)'''
+position = "after"
+payload = '''
+if maininput:pressed("f9") then
+	--bbp.utils.printTable(cs.timingInfo)
+	--bbp.utils.printTable(cs.preloadSoundData)
+end
+if _G.keyframeropen then
+	local oldcs = helpers.copy(cs)
+	_G.keyframeropen = false
+	cs = bs.load("Keyframer")
+	cs:init(oldcs.level, oldcs.variant, oldcs.editorBeat, oldcs.preloadSoundData.data)
+	--bbp.utils.printTable(oldcs.level)
+end
+'''
+match_indent = true

@@ -1,0 +1,22 @@
+# TODO
+
+- **UI**
+  - Timeline / done
+    - Deco Rows / done
+      - Keyframes in that row / done
+    - Markers (Like BPM changes, Bookmarks, Playsong, etc.) / done
+      - Better Marker drawing (maybe use the event's sprite instead of the playhead but upside down)
+  - Deco List Selector (Like the Blender Obj list)
+  - Keyframe/Marker/Event Editor/Adder
+  - Beat Snap / done
+  - Playback Speed
+  - Undo/Redo
+- Saving / done
+- 3D Editing
+- Keybinds
+- Parenting, plus other params
+- 3D decos, 3D camera, shader rendering, canvases, spritesheets
+- Tags
+- Selecting decos
+- Selecting decos through viewport
+- Cranky (for stuff like `p.x`, `p.y`, `p.drawScale` and whatever)
