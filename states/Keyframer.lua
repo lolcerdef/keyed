@@ -2,7 +2,7 @@ local st = Gamestate:new('Keyframer')
 
 st:setInit(function(self, level, variant, beat, preloadSoundData)
 	love.keyboard.setTextInput(true)
-	self.gm = em.init("GameManager") -- <- does fucking nothing and i can't be bothered to look into why
+	--self.gm = em.init("GameManager") -- <- does something, not much though
 	self.cmd = em.init("CommandHandler")
 	
 	self.isPlaying = false
@@ -29,19 +29,47 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	self.timelineScroll = 0
 	self.timelineRowScroll = 0
 	
-	self.level = self.level or level or nil
+	self.bpm = 100
+	self.baseBpm = 100
+	
+	self.level = level or nil
 	self.variant = variant
 	--[[if self.level == nil then
 		self.level = LevelManager:loadLevel(cLevel, cs.variant)
 		--bbp.utils.printTable(self.level)
 	end]]
+	if not self.level then
+		self:leave()
+		print("guh")
+	end
+	
+	--yk i'm pretty sure gamemanager should be making these but it isn't 
+	--and i'm not looking into it for now
+	self.combo = 0
+	self.misses = 0
+	self.barelies = 0
+	self.currentMaxHits = 0
+	self.level.bpm = 100
+	self.cBeat = self.editorBeat
+	self.p = { x = 0, y = 0, angle = 0, angleDelta = 0, drawScale = 1 } -- fake cranky for now
+	self.vfx = {
+		darkness = {
+			addLight = function() end
+		},
+		chromaticAberration = {
+			enabled = false
+		},
+		time = 0
+	}
+	--currently just a dud for textdeco, a player, and shuv
 	
 	self.decoSprites = {}
+	self.customFonts = {}
 	self.drawDecos = true
 	
 	-- list of deco ids
-	-- id1 =  {order = 2, events = {{time = 2, angle = 0, etc.}, etc.}},
-	-- otherid = {order = 2, events = {{time = 0, angle = 0, etc.}, etc.}}
+	-- id1 =  {kind = "deco", order = 2, events = {{time = 2, angle = 0, etc.}, etc.}},
+	-- otherid = {kind = "textdeco", order = 3, events = {{time = 0, angle = 0, etc.}, etc.}}
 	self.decos = {}
 	self.selectedDecos = {}
 	self.selectedKeyframes = {}
@@ -75,10 +103,16 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	}
 	
 	if self.level then
+		local decoCount = 0
 		for i, v in ipairs(self.level.events) do
-			local t = v.type:lower()
-			-- for now just regular deco objects
-			if v.type == "deco" then --(t:find("deco", 1, true) or t:find("camera", 1, true)) and not t:find("shader", 1, true) then
+			decoCount = decoCount + 1
+			
+			--local t = v.type:lower()
+			if v.type == "loadCustomFont" then
+				if Event.onLoad[v.type](v) then
+					self.drawDecos = false
+				end
+			elseif v.type == "deco" or v.type == "textdeco" then --(t:find("deco", 1, true) or t:find("camera", 1, true)) and not t:find("shader", 1, true) then
 				if v.id == nil or v.id == "" then
 					self.drawDecos = false
 					self:playbackError("IDs can't be empty.")
@@ -99,8 +133,9 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 				--print(v.sprite)
 				if not self.decos[v.id] then
 					self.decos[v.id] = {}
-					self.decos[v.id].order = #self.decos
+					self.decos[v.id].order = decoCount
 					self.decos[v.id].events = {}
+					self.decos[v.id].kind = v.type
 				end
 				table.insert(self.decos[v.id].events, self.level.events[i])
 				table.sort(self.decos[v.id].events, function(a, b)
@@ -109,6 +144,8 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 			elseif self.markerColors[v.type] then
 				table.insert(self.markers, self.level.events[i])
 				if v.type == "play" then
+					self.baseBpm = v.bpm
+					self.bpm = v.bpm
 					self.timingInfo.initial = {
 						beatOffset = v.time,
 						bpm = v.bpm,
@@ -120,12 +157,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 					print("found bpm event", v.time, v.bpm)
 				end
 			end
-			
-			print(v.type)
 		end
-	else
-		self:leave()
-		print("guh")
 	end
 	
 	table.sort(self.timingInfo.timingPoints, function(a, b)
@@ -139,16 +171,6 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	self.editMode = "none"
 	self.lockedAxis = "none"
 	-- changes to move, size, or rotate
-	
-	self.bpm = 100
-	self.baseBpm = 100
-	for _, m in ipairs(self.markers) do
-		if m.type == 'play' and m.bpm then
-			self.baseBpm = m.bpm
-			self.bpm = m.bpm
-			break
-		end
-	end
 	
 	self.rateMod = 1
 	
@@ -231,7 +253,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		'reset pan position',
 		'r'
 	)
-	self:addKeybind(function() -- this perhaps sucks
+	self:addKeybind(function() -- this perhaps sucks, doesn't play when editorBeat is before the play event
 			self.isPlaying = not self.isPlaying
 			if self.isPlaying and self.soundData then
 				local volume = (savedata.options.audio.musicvolume/10)
@@ -306,6 +328,9 @@ function st:playbackError(message)
 		self.errorMessage = message
 		self.errorHeader = "An error has occured during playback."
 		self.isPlaying = false
+		if self.source then
+			self.source:stop()
+		end
 	end
 end
 
@@ -448,7 +473,7 @@ function st:imgui()
 		
 		local total_rows_h = math.max(avail.y - rulerH, #rows * rowH)
 		
-		local first_beat = math.max(0, math.floor(scroll))
+		local first_beat = math.max(-8, math.floor(scroll))
 		local last_beat = math.ceil(scroll + trackAreaW / beatSize)
 		
 		
@@ -458,7 +483,7 @@ function st:imgui()
 		
 		for i, row in ipairs(rows) do
 			local row_index = i - 1 - rowScroll
-			if row_index >= 0 and row_index < visible_rows then
+			if row_index >= -8 and row_index < visible_rows then
 				local ry = tracky + row_index * rowH
 				
 				if i % 2 == 0 then
@@ -499,7 +524,7 @@ function st:imgui()
 		local bottomY = cursor.y + avail.y
 		for _, m in ipairs(self.markers) do
 			local x = beatToX(m.time)
-			if x >= trackX - diamondSize and x <= trackX + trackAreaW + diamondSize then
+			if x >= trackX and x <= trackX + trackAreaW + diamondSize then
 				local mc = self.markerColors[m.type] or 0xFFFFFFFF
 				local sel = self.selectedMarker == m
 				local c = sel and keySelC or mc
@@ -621,12 +646,14 @@ function st:imgui()
 				elseif io.KeyShift then
 					self.timelineRowScroll = math.max(0, math.min(#rows - visible_rows, rowScroll - wheel))
 				else
-					self.timelineScroll = math.max(0, scroll - wheel * 0.5)
+					self.timelineScroll = math.max(-8, scroll - wheel * 0.5 * beatSize/30)
 				end
 			end
 		end
 		
 	imgui.End()
+	
+	local wantsLeave = false
 	
 	if self.exitDialogue then
 		helpers.SetNextWindowPos(520, 310, window_flag)
@@ -639,7 +666,7 @@ function st:imgui()
 			end
 			imgui.SameLine()
 			if imgui.Button("No") then
-				self:leave()
+				wantsLeave = true
 			end
 		imgui.End()
 	end
@@ -654,42 +681,47 @@ function st:imgui()
 		if imgui.Button('OK') then
 			self.errorDialogue = false
 			if not self.drawDecos then
-				self:leave()
+				wantsLeave = true
 			end
 		end
 		imgui.End()
+	end
+	
+	if wantsLeave then
+		self:leave()
 	end
 end
 
 function st:updateDecos()
 	self.renderDecos = self.renderDecos or {}
-	for k, id in pairs(self.decos) do
-		if #id.events == 0 or self.editorBeat < id.events[1].time then
+	for k, v in pairs(self.decos) do
+		if #v.events == 0 or self.editorBeat < v.events[1].time then
 			self.renderDecos[k] = nil
 			goto continue
 		end
 		
-		local deco = {
-			drawLayer = "fg",
-			drawOrder = 0,
-			id = k,
-			sprite = "",
-			x = 300,
-			y = 180,
-			r = 0,
-			sx = 1,
-			sy = 1,
-			ox = 0,
-			oy = 0,
-			kx = 0,
-			ky = 0,
-			hide = false,
-			_actualOrder = 999
+		local isText = v.kind == "textdeco"
+		
+		if isText and not self.decoObjects[k] then
+			self.decoObjects[k] = em.init('TextDeco', {})
+			self.decoObjects[k].kind = "textdeco" 
+		end
+		
+		local deco = isText and self.decoObjects[k] or {
+			drawLayer = "fg", drawOrder = 0, v = k, sprite = "",
+			x = 300, y = 180, r = 0, sx = 1, sy = 1,
+			ox = 0, oy = 0, kx = 0, ky = 0, hide = false, _actualOrder = 999
 		}
 		
-		for p, _ in pairs(deco) do
+		local props = isText
+			and {'x','y','r','sx','sy','kx','ky','kyFake','wrapLen','extraCharSpacing',
+			     'drawLayer','drawOrder','colour','justification','font','hide',
+			     'alphadither','ditherpercent','text'}
+			or  {'drawLayer','drawOrder','id','sprite','x','y','r','sx','sy','ox','oy','kx','ky','hide'}
+		
+		for _, p in ipairs(props) do
 			local propEvents = {}
-			for _, e in ipairs(id.events) do
+			for _, e in ipairs(v.events) do
 				if e[p] ~= nil and e.time <= self.editorBeat then
 					table.insert(propEvents, e)
 				end
@@ -699,37 +731,25 @@ function st:updateDecos()
 			local base = deco[p]
 			for i = 1, #propEvents - 1 do
 				local e = propEvents[i]
-				if e.mode == "add" and type(e[p]) == "number" then
-					base = base + e[p]
-				else
-					base = e[p]
-				end
+				base = (e.mode == "add" and type(e[p]) == "number") and (base + e[p]) or e[p]
 			end
 			
 			local e = propEvents[#propEvents]
-			local target
-			if e.mode == "add" and type(e[p]) == "number" then
-				target = base + e[p]
-			else
-				target = e[p]
-			end
+			local target = (e.mode == "add" and type(e[p]) == "number") and (base + e[p]) or e[p]
 			
 			local ease = e.ease or "linear"
 			local duration = e.duration or 0
-			local t
-			if duration > 0 then
-				t = helpers.clamp((self.editorBeat - e.time) / duration, 0, 1)
-			else
-				t = 1
-			end
-			
-			if type(target) == "number" then
-				deco[p] = helpers.interpolate(base, target, t, ease)
-			else
-				deco[p] = target
-			end
-			
+			local t = duration > 0
+				and helpers.clamp((self.editorBeat - e.time) / duration, 0, 1)
+				or 1
+				
+			deco[p] = (type(target) == "number") and helpers.interpolate(base, target, t, ease) or target
 			::nextprop::
+		end
+		
+		if isText then
+			-- take the first and put that to the todo list
+			deco.text = (deco.text or ""):match("^[^|]*") or ""
 		end
 		
 		local layerBase
@@ -745,6 +765,12 @@ function st:updateDecos()
 		self.renderDecos[k] = deco
 		::continue::
 	end
+end
+
+function st:drawDeco(v)
+	local sprite = self.decoSprites[v.sprite] or sprites.cat
+	love.graphics.draw(sprite, (v.x or 300) - self.pan[1], (v.y or 180) - self.pan[2], 
+		math.rad(v.r or 0), v.sx or 1, v.sy or 1, v.ox or 0, v.oy or 0, v.kx or 0, v.ky or 0)
 end
 
 st:setFgDraw(function(self)
@@ -792,10 +818,20 @@ st:setFgDraw(function(self)
 		end)
 		
 		love.graphics.setColor(1, 1, 1)
+		
 		for _, v in ipairs(sortedDecos) do
 			if not v.hide then
-				local sprite = self.decoSprites[v.sprite] or sprites.cat
-				love.graphics.draw(sprite, (v.x or 300) - self.pan[1], (v.y or 180) - self.pan[2], math.rad(v.r or 0), v.sx or 1, v.sy or 1, v.ox or 0, v.oy or 0, v.kx or 0, v.ky or 0)
+				if v.kind == "textdeco" then
+					local ox, oy = v.x, v.y
+					v.x, v.y = ox - self.pan[1], oy - self.pan[2]
+					local success, err = pcall(v.drawSprite, v)
+					if err then print(err) end 
+					--something happens with color that causes it to pass nil to helpers.copytable
+					--need to look into it later
+					v.x, v.y = ox, oy
+				else
+					self:drawDeco(v)
+				end
 			end
 		end
 	end

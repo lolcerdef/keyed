@@ -17,12 +17,14 @@
 - Parenting, plus other params
 - 3D decos
 - 3D camera
-- shader rendering
-- Canvases (maybe make it so that you can look at different canvases?)
-- Spritesheets
-- AFTs
+- USE A DECO OBJECT INSTEAD
+  - shader rendering
+  - Canvases (maybe make it so that you can look at different canvases?)
+  - Spritesheets
+  - AFTs
 - Tags
 - Selecting decos
 - Selecting decos through viewport
 - Cranky (for stuff like `p.x`, `p.y`, `p.drawScale` and whatever)
+- Advance Text Deco
 - Probably more I don't remember
