@@ -147,6 +147,9 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 				end
 				table.insert(self.decos[v.id].events, self.level.events[i])
 				table.sort(self.decos[v.id].events, function(a, b)
+					if a.time == b.time then
+						return (a.order or 0) < (b.order or 0)
+					end
 					return a.time < b.time
 				end)
 			end
@@ -746,6 +749,9 @@ function st:imgui()
 					self.draggingKey.time = newTime
 					if self.draggingKeyRow then
 						table.sort(self.draggingKeyRow.events, function(a, b)
+							if a.time == b.time then
+								return (a.order or 0) < (b.order or 0)
+							end
 							return a.time < b.time
 						end)
 					end
@@ -840,6 +846,7 @@ function st:updateDecos()
 			goto continue
 		end
 		
+		local isFirstOfID = false
 		local isText = v.kind == "textdeco"
 		
 		if not self.decoObjects[k] then
@@ -850,6 +857,7 @@ function st:updateDecos()
 				self.decoObjects[k] = em.init('Deco', {})
 				self.decoObjects[k].kind = "deco"
 			end
+			isFirstOfID = true
 		end
 		
 		local deco = self.decoObjects[k]
@@ -927,6 +935,7 @@ function st:updateDecos()
 			layerBase = 0
 		end
 		deco._actualOrder = layerBase + deco.drawOrder
+		deco._spawnOrder = isFirstOfID and v.time or deco._spawnOrder
 		
 		self.renderDecos[k] = deco
 		::continue::
@@ -989,11 +998,16 @@ st:setFgDraw(function(self)
 				return bOnTop
 			end
 			if aOnTop and bOnTop then -- i know ontop layering doesn't actually work ingame but whatever
-				return (a.drawOrder or 0) < (b.drawOrder or 0)
+				if (a.drawOrder or 0) ~= (b.drawOrder or 0) then
+					return (a.drawOrder or 0) < (b.drawOrder or 0)
+				end
+				return (a._spawnOrder or 0) < (b._spawnOrder or 0)
 			end
-			return (a._actualOrder or 0) < (b._actualOrder or 0)
+			if (a._actualOrder or 0) ~= (b._actualOrder or 0) then
+				return (a._actualOrder or 0) < (b._actualOrder or 0)
+			end
+			return (a._spawnOrder or 0) < (b._spawnOrder or 0)
 		end)
-		
 		
 		love.graphics.setColor(1,1,1,1)
 			self:drawDecoList(sortedDecos)
