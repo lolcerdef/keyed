@@ -29,6 +29,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	shuv.resetPal()
 	
 	self.editorBeat = beat or 0
+	self.lastEditorBeat = self.editorBeat
 	self.beatSize = 40
 	self.timelineScroll = 0
 	self.timelineRowScroll = 0
@@ -133,6 +134,9 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 			elseif v.type == "deco" or v.type == "textdeco" then
 				if Event.onLoad[v.type](v) then
 					self.drawDecos = false
+				end
+				if v.type == "textdeco" then
+					v.text = v.textString
 				end
 				
 				if not self.decos[v.id] then
@@ -406,9 +410,22 @@ function st:updateColorPalette()
 	end
 end
 
+function st:rebuildDecoObjects()
+	for _, deco in pairs(self.decoObjects) do
+		deco.delete = true
+	end
+	self.decoObjects = {}
+	self.renderDecos = {}
+end
+
 st:setUpdate(function(self, dt)
 	self:updateColorPalette()
 	self:setBGColor()
+	
+	if self.editorBeat < (self.lastEditorBeat or self.editorBeat) - 0.0001 then
+		self:rebuildDecoObjects()
+	end
+	self.lastEditorBeat = self.editorBeat
 	
 	if self.isPlaying then
 		
