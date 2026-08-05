@@ -919,7 +919,7 @@ end
 function st:drawDecoList(decos)
 	for _, v in ipairs(decos) do
 		if not v.hide then
-			local ox, oy = v.x, v.:thumbs_up:
+			local ox, oy = v.x, v.y
 			v.x, v.y = ox - self.pan[1], oy - self.pan[2]
 			local success, err = pcall(v.drawSprite, v) --i want to use draw, or drawMirrored but text no draw and i am tired so yeah :thumbs_up:
 			if err then print(err) end
