@@ -921,7 +921,7 @@ function st:drawDecoList(decos)
 		if not v.hide then
 			local ox, oy = v.x, v.y
 			v.x, v.y = ox - self.pan[1], oy - self.pan[2]
-			local success, err = pcall(v.draw, v)
+			local success, err = pcall(v.drawMirrored, v)
 			if err then print(err) end
 			v.x, v.y = ox, oy
 		end
