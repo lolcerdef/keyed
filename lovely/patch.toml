@@ -16,6 +16,18 @@ match_indent = true
 
 [[patches]]
 [patches.pattern]
+target = "lib/rtf.lua"
+pattern = '''if xscale == 0 or yscale == 0 then -- If scale is 0 we can't see the text anyway'''
+position = "after"
+payload = '''
+love.graphics.pop()
+-- apparently this was the problem causing more pushs than pops
+-- which crashed imgui
+'''
+match_indent = true
+
+[[patches]]
+[patches.pattern]
 target = "levelformat/events/Vfx/Deco/deco.lua"
 pattern = '''Event.property(event,'decimal','repeatDelay', 'Beats between repeats', {step = cs:getBeatStep(),optional = true, default = 1})'''
 position = "after"
@@ -43,8 +55,21 @@ if _G.keyframeropen then
 	local oldcs = helpers.copy(cs)
 	_G.keyframeropen = false
 	cs = bs.load("Keyframer")
-	cs:init(oldcs.level, oldcs.variant, oldcs.editorBeat, oldcs.preloadSoundData.data)
+	cs:init(oldcs.level, oldcs.variant, oldcs.editorBeat, oldcs.preloadSoundData and oldcs.preloadSoundData.data or nil)
 	--bbp.utils.printTable(oldcs.level)
+end
+'''
+match_indent = true
+
+# ...
+[[patches]]
+[patches.pattern]
+target = "main.lua"
+pattern = '''love.graphics.draw(imgui.canvas, shuv.xoffset, shuv.yoffset, 0, shuv.scale / imgui.canvasScale)'''
+position = "after"
+payload = '''
+if cs.aboveImguiCanv then
+	love.graphics.draw(cs.aboveImguiCanv, shuv.xoffset, shuv.yoffset, 0, shuv.scale / imgui.canvasScale)
 end
 '''
 match_indent = true

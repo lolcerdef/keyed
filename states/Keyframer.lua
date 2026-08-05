@@ -10,6 +10,8 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	love.mouse.setVisible(true)
 	mouse.hidden = true
 	
+	self.aboveImguiCanv = love.graphics.newCanvas(1200,720)
+	
 	--self.returnData = returnData or nil
 	self.soundData = preloadSoundData
 	self.timingInfo = {
@@ -391,7 +393,7 @@ function st:imgui()
 	helpers.SetNextWindowSize(700, 200, window_flag)
 	imgui.Begin("Timeline ##keyframer",nil,inputFlag)
 		
-		local drawlist = imgui.GetWindowDrawList()
+		--local drawlist = imgui.GetWindowDrawList()
 		
 		local function snapBeat(b)
 			local subdiv = self.beatSnapValues[self.beatSnap] or 1
@@ -401,20 +403,44 @@ function st:imgui()
 			return math.max(-8, snapBeat(math.max(-8, b)))
 		end
 		
+		local function setColor(c)
+			local a = math.floor(c / 0x1000000) % 0x100
+			local r = math.floor(c / 0x10000) % 0x100
+			local g = math.floor(c / 0x100) % 0x100
+			local b = c % 0x100
+			
+			love.graphics.setColor(r / 255, g / 255, b / 255, a / 255)
+		end
+		
 		local function line(x1, y1, x2, y2, c, w)
-			drawlist:AddLine({x1, y1}, {x2, y2}, c, w)
+			--drawlist:AddLine({x1, y1}, {x2, y2}, c, w)
+			setColor(c)
+			love.graphics.setLineWidth(w)
+			love.graphics.line(x1,y1,x2,y2)
 		end
-		local function rect(x1, y1, x2, y2, c)
-			drawlist:AddRectFilled({x1, y1}, {x2, y2}, c)
+		local function rect(x, y, w, h, c)
+			--drawlist:AddRectFilled({x1, y1}, {x2, y2}, c)
+			setColor(c)
+			love.graphics.setLineWidth(0)
+			love.graphics.rectangle("fill", x, y, w, h)
 		end
-		local function text(x, y, c, t)
-			drawlist:AddText_Vec2({x, y}, c, t)
+		local function text(x, y, c, t, r)
+			--drawlist:AddText_Vec2({x, y}, c, t)
+			setColor(c)
+			local r = r or 0
+			love.graphics.print(t, x, y, math.rad(r))
 		end
 		local function quad(x1, y1, x2, y2, x3, y3, x4, y4, c)
-			drawlist:AddQuadFilled({x1, y1}, {x2, y2}, {x3, y3}, {x4, y4}, c)
+			--drawlist:AddQuadFilled({x1, y1}, {x2, y2}, {x3, y3}, {x4, y4}, c)
+			setColor(c)
+			love.graphics.setLineWidth(0)
+			love.graphics.polygon("fill", x1, y1, x2, y2, x3, y3, x4, y4)
 		end
 		local function triangle(x1, y1, x2, y2, x3, y3, c)
-			drawlist:AddTriangleFilled({x1, y1}, {x2, y2}, {x3, y3}, c)
+			--drawlist:AddTriangleFilled({x1, y1}, {x2, y2}, {x3, y3}, c)
+			setColor(c)
+			love.graphics.setLineWidth(0)
+			love.graphics.polygon("fill", x1, y1, x2, y2, x3, y3)
 		end
 		
 		local winpos = imgui.GetWindowPos()
@@ -430,6 +456,7 @@ function st:imgui()
 		local scroll = self.timelineScroll
 		local rowScroll = self.timelineRowScroll
 		
+		local bottomY = cursor.y + avail.y
 		local visible_rows = math.floor((avail.y - rulerH) / rowH)
 		local diamondSize = 6
 		
@@ -452,7 +479,17 @@ function st:imgui()
 			return (x - trackX) / beatSize + scroll
 		end
 		
+		--[[
+		the reason why it's using love.graphics instead now
+		is because i though it was a problem with imgui/love 
+		not likey big drawlists and causes a crash due to 
+		stack limit or something.
+		It is actually caused by rtf reaching stack depth
+		because when x or y scale is 0 it returns before
+		doing love.graphics.pop
 		
+		I think i'll keep this for now though.
+		]]
 		
 		--[[
 		order:
@@ -476,93 +513,101 @@ function st:imgui()
 		local first_beat = math.max(-8, math.floor(scroll))
 		local last_beat = math.ceil(scroll + trackAreaW / beatSize)
 		
-		
-		rect(cursor.x, cursor.y, cursor.x + avail.x, cursor.y + avail.y, BGC)
-		rect(cursor.x, tracky, cursor.x + labelW, cursor.y + avail.y, labelBGC)
-		
-		
-		for i, row in ipairs(rows) do
-			local row_index = i - 1 - rowScroll
-			if row_index >= -8 and row_index < visible_rows then
-				local ry = tracky + row_index * rowH
-				
-				if i % 2 == 0 then
-					rect(cursor.x, ry, cursor.x + avail.x, ry + rowH, rowAltC)
+		love.graphics.setCanvas(self.aboveImguiCanv)
+		love.graphics.clear(1,1,1,0)
+		if not imgui.IsWindowCollapsed() then
+			love.graphics.setFont(fonts.main)
+			
+			love.graphics.setScissor(cursor.x, cursor.y, avail.x, avail.y)
+			rect(cursor.x, cursor.y, avail.x, avail.y, BGC)
+			rect(cursor.x, tracky, labelW, avail.y, labelBGC)
+			
+			
+			for i, row in ipairs(rows) do
+				local row_index = i - 1 - rowScroll
+				if row_index >= -8 and row_index < visible_rows then
+					local ry = tracky + row_index * rowH
+					
+					if i % 2 == 0 then
+						rect(cursor.x, ry, avail.x, rowH, rowAltC)
+					end
+					
+					line(cursor.x, ry + rowH, cursor.x + avail.x, ry + rowH, lineC, 1)
+					text(cursor.x + 8, ry + rowH / 2 - 7, textC, tostring(row.id))
 				end
-				
-				line(cursor.x, ry + rowH, cursor.x + avail.x, ry + rowH, lineC, 1)
-				text(cursor.x + 8, ry + rowH / 2 - 7, textC, tostring(row.id))
 			end
-		end
-		
-		
-		for b = first_beat, last_beat do
-			local x = beatToX(b)
-			if x >= trackX and x <= trackX + trackAreaW then
-				line(x, tracky, x, cursor.y + avail.y, lineC, 1)
+			
+			
+			for b = first_beat, last_beat do
+				local x = beatToX(b)
+				if x >= trackX and x <= trackX + trackAreaW then
+					line(x, tracky, x, cursor.y + avail.y, lineC, 1)
+				end
 			end
-		end
-		
-		
-		for b = first_beat, last_beat do
-			local x = beatToX(b)
-			if x >= trackX and x <= trackX + trackAreaW then
-				line(x, cursor.y, x, cursor.y + rulerH, lineHiC, 1)
-				text(x + 3, cursor.y + 2, textC, string.format("%db", b))
-				if beatSize > 40 then
-					for q = 1, 3 do
-						local qx = beatToX(b + q * 0.25)
-						if qx >= trackX and qx <= trackX + trackAreaW then
-							line(qx, cursor.y + rulerH * 0.6, qx, cursor.y + rulerH, lineC, 1)
+			
+			
+			for b = first_beat, last_beat do
+				local x = beatToX(b)
+				if x >= trackX and x <= trackX + trackAreaW then
+					line(x, cursor.y, x, cursor.y + rulerH, lineHiC, 1)
+					text(x + 3, cursor.y + 2, textC, string.format("%db", b))
+					if beatSize > 40 then
+						for q = 1, 3 do
+							local qx = beatToX(b + q * 0.25)
+							if qx >= trackX and qx <= trackX + trackAreaW then
+								line(qx, cursor.y + rulerH * 0.6, qx, cursor.y + rulerH, lineC, 1)
+							end
 						end
 					end
 				end
 			end
-		end
-		
-		
-		local bottomY = cursor.y + avail.y
-		for _, m in ipairs(self.markers) do
-			local x = beatToX(m.time)
-			if x >= trackX and x <= trackX + trackAreaW + diamondSize then
-				local mc = self.markerColors[m.type] or 0xFFFFFFFF
-				local sel = self.selectedMarker == m
-				local c = sel and keySelC or mc
-				line(x, tracky, x, bottomY, c, sel and 2 or 1)
-				triangle(x - 6, bottomY, x + 6, bottomY, x, bottomY - 8, c)
-				
-				local t = m.name or m.type
-				text(x + 8, bottomY - 14, c, t)
-			end
-		end
-		
-		
-		for i, row in ipairs(rows) do
-			local row_index = i - 1 - rowScroll
-			if row_index >= 0 and row_index < visible_rows then
-				local ry = tracky + row_index * rowH
-				
-				for _, ev in ipairs(row.events) do
-					local y = ry + rowH / 2
-					local x = beatToX(ev.time)
-					local endX = beatToX(ev.time + (ev.duration or 0))
-					local c = self.selectedKeyframes[ev] and keySelC or keyC
+			
+			
+			for _, m in ipairs(self.markers) do
+				local x = beatToX(m.time)
+				if x >= trackX and x <= trackX + trackAreaW + diamondSize then
+					local mc = self.markerColors[m.type] or 0xFFFFFFFF
+					local sel = self.selectedMarker == m
+					local c = sel and keySelC or mc
+					line(x, tracky, x, bottomY, c, sel and 2 or 1)
+					triangle(x - 6, bottomY, x + 6, bottomY, x, bottomY - 8, c)
 					
-					if x >= trackX - diamondSize and x <= trackX + trackAreaW + diamondSize then
-						line(x, y, endX, y, c, 2)
-						quad(x, y - diamondSize, x + diamondSize, y, x, y + diamondSize, x - diamondSize, y, c)
+					local t = m.name or m.type
+					text(x, bottomY - 7, c, t, -90)
+				end
+			end
+			
+			
+			for i, row in ipairs(rows) do
+				local row_index = i - 1 - rowScroll
+				if row_index >= 0 and row_index < visible_rows then
+					local ry = tracky + row_index * rowH
+					
+					for _, ev in ipairs(row.events) do
+						local y = ry + rowH / 2
+						local x = beatToX(ev.time)
+						local endX = beatToX(ev.time + (ev.duration or 0))
+						local c = self.selectedKeyframes[ev] and keySelC or keyC
+						
+						if x >= trackX - diamondSize and x <= trackX + trackAreaW + diamondSize then
+							line(x, y, endX, y, c, 2)
+							quad(x, y - diamondSize, x + diamondSize, y, x, y + diamondSize, x - diamondSize, y, c)
+						end
 					end
 				end
 			end
+			
+			
+			line(trackX, cursor.y, trackX, cursor.y + avail.y, lineHiC, 1)
+			local px = beatToX(self.editorBeat)
+			if px >= trackX and px <= trackX + trackAreaW then
+				line(px, cursor.y, px, cursor.y + avail.y, playC, 2)
+				triangle(px - 6, cursor.y, px + 6, cursor.y, px, cursor.y + 8, playC)
+			end
+			
+			love.graphics.setScissor()
 		end
-		
-		
-		line(trackX, cursor.y, trackX, cursor.y + avail.y, lineHiC, 1)
-		local px = beatToX(self.editorBeat)
-		if px >= trackX and px <= trackX + trackAreaW then
-			line(px, cursor.y, px, cursor.y + avail.y, playC, 2)
-			triangle(px - 6, cursor.y, px + 6, cursor.y, px, cursor.y + 8, playC)
-		end
+		love.graphics.setCanvas()
 		
 		-- fuckass controls
 		imgui.SetCursorScreenPos({cursor.x, cursor.y})
@@ -704,7 +749,7 @@ function st:updateDecos()
 		
 		if isText and not self.decoObjects[k] then
 			self.decoObjects[k] = em.init('TextDeco', {})
-			self.decoObjects[k].kind = "textdeco" 
+			self.decoObjects[k].kind = "textdeco"
 		end
 		
 		local deco = isText and self.decoObjects[k] or {
@@ -838,13 +883,7 @@ st:setFgDraw(function(self)
 	
 	love.graphics.setColor(1, 0, 0)
 	love.graphics.setLineWidth(2)
-	love.graphics.rectangle(
-		"line",
-		-self.pan[1],
-		-self.pan[2],
-		sw,
-		sh
-	)
+	love.graphics.rectangle("line", -self.pan[1] - 1, -self.pan[2] - 1, sw + 2, sh + 2)
 
 	self:imgui()
 end)
