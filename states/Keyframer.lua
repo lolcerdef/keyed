@@ -1,5 +1,14 @@
 local st = Gamestate:new('Keyframer')
 
+local function convertCol(c)
+	local a = math.floor(c / 0x1000000) % 0x100
+	local r = math.floor(c / 0x10000) % 0x100
+	local g = math.floor(c / 0x100) % 0x100
+	local b = c % 0x100
+	
+	return {r / 255, g / 255, b / 255, a / 255}
+end
+
 st:setInit(function(self, level, variant, beat, preloadSoundData)
 	em.clear()
 	
@@ -16,7 +25,6 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	
 	self.aboveImguiCanv = love.graphics.newCanvas(1200,720)
 	
-	--self.returnData = returnData or nil
 	self.soundData = preloadSoundData
 	self.timingInfo = {
 		initial = {},
@@ -38,45 +46,15 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	self.timelineScroll = 0
 	self.timelineRowScroll = 0
 	
-	self.bpm = 100
-	self.baseBpm = 100
-	
 	self.level = level or nil
 	self.variant = variant
-	--[[if self.level == nil then
-		self.level = LevelManager:loadLevel(cLevel, cs.variant)
-		--bbp.utils.printTable(self.level)
-	end]]
 	if not self.level then
 		self:leave()
 		print("guh")
+		return
 	end
 	
-	-- future here: i didn't call resetLevel.
-	--yk i'm pretty sure gamemanager should be making these but it isn't 
-	--and i'm not looking into it for now
-	--[[self.combo = 0
-	self.misses = 0
-	self.barelies = 0
-	self.currentMaxHits = 0
-	self.level.bpm = 100
-	self.cBeat = self.editorBeat
-	self.vfx = {
-		darkness = {
-			addLight = function() end
-		},
-		chromaticAberration = {
-			enabled = false
-		},
-		time = 0
-	}
-	--currently just a dud for textdeco, a player, and shuv
-	
-	self.decoSprites = {}
-	self.customFonts = {}]]
-	
 	self.drawDecos = true
-	self.decoCanvas = love.graphics.newCanvas(600, 360)
 	
 	-- list of deco ids
 	-- id1 =  {kind = "deco", order = 2, events = {{time = 2, angle = 0, etc.}, etc.}},
@@ -92,32 +70,37 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	self.draggingMarker = nil
 	
 	self.markerColors = {
-		bookmark = 0xFFFFD86B,
-		comment = 0xFF555555,
-		tag = 0xFFF08E54,
-		play = 0xFF4261FF,
-		playSound = 0xFFFF4242,
-		setBPM = 0xFF9B59B6,
-		retime = 0xFF1ABC9C,
-		showResults = 0xFF2ECC71,
-		loadCustomFont = 0xFFE84393,
-		advancetextdeco = 0xFFA29BFE,
-		decoShader = 0xFF00CEC9,
-		shader_uniform = 0xFF6C5CE7,
-		newCanvas = 0xFFB8E986,
-		editCanvas = 0xFF8E9B0C,
-		ease = 0xFF74B9FF,
-		outline = 0xFF95A5A6,
-		setBgColor = 0xFFF1C40F,
-		setBoolean = 0xFFFF7675,
-		setColor = 0xFFD980FA,
+		bookmark = convertCol(0xFFFFD86B),
+		comment = convertCol(0xFF555555),
+		tag = convertCol(0xFFF08E54),
+		play = convertCol(0xFF4261FF),
+		playSound = convertCol(0xFFFF4242),
+		setBPM = convertCol(0xFF9B59B6),
+		retime = convertCol(0xFF1ABC9C),
+		showResults = convertCol(0xFF2ECC71),
+		loadCustomFont = convertCol(0xFFE84393),
+		advancetextdeco = convertCol(0xFFA29BFE),
+		decoShader = convertCol(0xFF00CEC9),
+		shader_uniform = convertCol(0xFF6C5CE7),
+		newCanvas = convertCol(0xFFB8E986),
+		editCanvas = convertCol(0xFF8E9B0C),
+		ease = convertCol(0xFF74B9FF),
+		outline = convertCol(0xFF95A5A6),
+		setBgColor = convertCol(0xFFF1C40F),
+		setBoolean = convertCol(0xFFFF7675),
+		setColor = convertCol(0xFFD980FA),
 	}
 	
 	local loadTheseMarkers = {
 		loadCustomFont = true,
 		newCanvas = true,
 		decoShader = true,
+		tags = true, 
 	} -- probably more i'm forgetting rn
+	-- tags inset events into self.playEvents, perhaps this could be used?
+	-- like maybe self.playEvents get rebuilt when a tag is added/removed/modified
+	-- and everything else looks in this?
+	-- tags are probably the only thing that does this no?
 	
 	if self.level then
 		self.gm:resetLevel()
@@ -163,8 +146,6 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	table.sort(self.timingInfo.timingPoints, function(a, b)
 		return a.beat < b.beat
 	end)
-	
-	--bbp.utils.printTable(self.timingInfo)
 	
 	self.mouseStartX = nil
 	self.mouseStartY = nil
@@ -263,7 +244,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 					:setVolume(volume)
 					:play()
 					:on("end", function() log("song finished!!!!!!!!!!") end)
-				self.source:setBeat(self.editorBeat)
+				self.source:setBeat(self.editorBeat--[[ - self:getRetimeOffset(self.editorBeat)]])
 				
 				if self.rateMod then
 					self.source:setPitch(self.rateMod)
@@ -325,6 +306,10 @@ function st:leave()
 	cs:init()
 end
 
+function st:getSnapValue()
+	return self.beatSnapValues[self.beatSnap] or self.customBeatSnap
+end
+
 function st:playbackError(message)
 	if not self.errorDialogue then
 		log('Playback error: '..message,'error')
@@ -336,6 +321,23 @@ function st:playbackError(message)
 			self.source:stop()
 		end
 	end
+end
+
+function st:getRetimeOffset(beat)
+	local offset = 0
+	local retimes = {}
+	for _, m in ipairs(self.markers) do
+		if m.type == 'retime' then
+			table.insert(retimes, m)
+		end
+	end
+	table.sort(retimes, function(a, b) return a.time < b.time end)
+	for _, m in ipairs(retimes) do
+		if beat > m.time then
+			offset = offset + m.offset
+		end
+	end
+	return offset
 end
 
 function st:getBPMAtBeat(beat)
@@ -419,9 +421,12 @@ function st:updateColorPalette()
 end
 
 function st:rebuildDecoObjects()
-	for _, deco in pairs(self.decoObjects) do
-		deco.delete = true
-	end
+	local oldp_actualX = self.p._actualX
+	local oldp_actualY = self.p._actualY
+	em.clear()
+	self.p = em.init('Player')
+	self.p._actualX = oldp_actualX
+	self.p._actualY = oldp_actualY
 	self.decoObjects = {}
 	self.renderDecos = {}
 	print("KILLED EVERYTHING")
@@ -440,9 +445,10 @@ st:setUpdate(function(self, dt)
 	self.lastEditorBeat = self.editorBeat
 	
 	if self.isPlaying then
-		
-		self.bpm = self:getBPMAtBeat(self.editorBeat)
-		self.editorBeat = self.editorBeat + (self.bpm/60) * love.timer.getDelta()
+		self.source:update(dt)
+		self.level.bpm = self:getBPMAtBeat(self.editorBeat)
+		self.editorBeat = self.source:getBeat() + self:getRetimeOffset(self.source:getBeat())
+		self.cBeat = self.editorBeat
 		self.timelineScroll = self.editorBeat - 50/self.beatSize
 		
 		for _, v in pairs(self.decoObjects) do
@@ -485,49 +491,35 @@ function st:imgui()
 		--local drawlist = imgui.GetWindowDrawList()
 		
 		local function snapBeat(b)
-			local subdiv = self.beatSnapValues[self.beatSnap] or 1
+			local subdiv = self:getSnapValue() or 1
 			return math.floor(b * subdiv + 0.5) / subdiv
 		end
 		local function clampedSnap(b)
 			return math.max(-8, snapBeat(math.max(-8, b)))
 		end
 		
-		local function setColor(c)
-			local a = math.floor(c / 0x1000000) % 0x100
-			local r = math.floor(c / 0x10000) % 0x100
-			local g = math.floor(c / 0x100) % 0x100
-			local b = c % 0x100
-			
-			love.graphics.setColor(r / 255, g / 255, b / 255, a / 255)
-		end
-		
 		local function line(x1, y1, x2, y2, c, w)
-			--drawlist:AddLine({x1, y1}, {x2, y2}, c, w)
-			setColor(c)
+			love.graphics.setColor(c)
 			love.graphics.setLineWidth(w)
 			love.graphics.line(x1,y1,x2,y2)
 		end
 		local function rect(x, y, w, h, c)
-			--drawlist:AddRectFilled({x1, y1}, {x2, y2}, c)
-			setColor(c)
+			love.graphics.setColor(c)
 			love.graphics.setLineWidth(0)
 			love.graphics.rectangle("fill", x, y, w, h)
 		end
 		local function text(x, y, c, t, r)
-			--drawlist:AddText_Vec2({x, y}, c, t)
-			setColor(c)
+			love.graphics.setColor(c)
 			local r = r or 0
 			love.graphics.print(t, x, y, math.rad(r))
 		end
 		local function quad(x1, y1, x2, y2, x3, y3, x4, y4, c)
-			--drawlist:AddQuadFilled({x1, y1}, {x2, y2}, {x3, y3}, {x4, y4}, c)
-			setColor(c)
+			love.graphics.setColor(c)
 			love.graphics.setLineWidth(0)
 			love.graphics.polygon("fill", x1, y1, x2, y2, x3, y3, x4, y4)
 		end
 		local function triangle(x1, y1, x2, y2, x3, y3, c)
-			--drawlist:AddTriangleFilled({x1, y1}, {x2, y2}, {x3, y3}, c)
-			setColor(c)
+			love.graphics.setColor(c)
 			love.graphics.setLineWidth(0)
 			love.graphics.polygon("fill", x1, y1, x2, y2, x3, y3)
 		end
@@ -550,15 +542,15 @@ function st:imgui()
 		local diamondSize = 6
 		
 		-- clors :3
-		local BGC = 0xFF222222
-		local labelBGC = 0xFF1A1A1A
-		local rowAltC = 0xFF272727
-		local lineC = 0xFF3C3C3C
-		local lineHiC = 0xFF5A5A5A
-		local textC = 0xFFB0B0B0
-		local playC = 0xFF3AA0FF
-		local keyC = 0xFFE0C040
-		local keySelC = 0xFFFF6060
+		local BGC = convertCol(0xFF222222)
+		local labelBGC = convertCol(0xFF1A1A1A)
+		local rowAltC = convertCol(0xFF272727)
+		local lineC = convertCol(0xFF3C3C3C)
+		local lineHiC = convertCol(0xFF5A5A5A)
+		local textC = convertCol(0xFFB0B0B0)
+		local playC = convertCol(0xFF3AA0FF)
+		local keyC = convertCol(0xFFE0C040)
+		local keySelC = convertCol(0xFFFF6060)
 		
 		local beatSize = self.beatSize
 		local function beatToX(b)
@@ -602,12 +594,15 @@ function st:imgui()
 		local first_beat = math.max(-8, math.floor(scroll))
 		local last_beat = math.ceil(scroll + trackAreaW / beatSize)
 		
-		love.graphics.setCanvas(self.aboveImguiCanv)
+		love.graphics.setCanvas(self.aboveImguiCanv)	
 		love.graphics.clear(1,1,1,0)
 		if not imgui.IsWindowCollapsed() then
 			love.graphics.setFont(fonts.main)
 			
-			love.graphics.setScissor(cursor.x, cursor.y, avail.x, avail.y)
+			local width = math.max(0, avail.x)
+			local height = math.max(0, avail.y)
+
+			love.graphics.setScissor(cursor.x, cursor.y, width, height)
 			rect(cursor.x, cursor.y, avail.x, avail.y, BGC)
 			rect(cursor.x, tracky, labelW, avail.y, labelBGC)
 			
@@ -641,8 +636,8 @@ function st:imgui()
 					line(x, cursor.y, x, cursor.y + rulerH, lineHiC, 1)
 					text(x + 3, cursor.y + 2, textC, string.format("%db", b))
 					if beatSize > 40 then
-						for q = 1, 3 do
-							local qx = beatToX(b + q * 0.25)
+						for q = 1, self:getSnapValue() do
+							local qx = beatToX(b + q * 1/self:getSnapValue())
 							if qx >= trackX and qx <= trackX + trackAreaW then
 								line(qx, cursor.y + rulerH * 0.6, qx, cursor.y + rulerH, lineC, 1)
 							end
@@ -655,7 +650,7 @@ function st:imgui()
 			for _, m in ipairs(self.markers) do
 				local x = beatToX(m.time)
 				if x >= trackX and x <= trackX + trackAreaW + diamondSize then
-					local mc = self.markerColors[m.type] or 0xFFFFFFFF
+					local mc = self.markerColors[m.type] or {1,1,1,1}
 					local sel = self.selectedMarker == m
 					local c = sel and keySelC or mc
 					line(x, tracky, x, bottomY, c, sel and 2 or 1)
@@ -663,6 +658,9 @@ function st:imgui()
 					
 					local t = m.name or m.type
 					text(x, bottomY - 7, c, t, -90)
+					if m.duration then
+						line(x, bottomY, beatToX(m.time + (m.duration or 0)), bottomY, c, 2)
+					end
 				end
 			end
 			
@@ -792,8 +790,9 @@ function st:imgui()
 	
 	helpers.SetNextWindowPos(270, 500, window_flag)
 	helpers.SetNextWindowSize(200, 200, window_flag)
-	imgui.Begin("Viewport Settings ##keyframer",nil,inputFlag)
+	imgui.Begin("Settings ##keyframer",nil,inputFlag)
 		shuv.usePalette = helpers.InputBool("Use Palette", shuv.usePalette or false)
+		
 		local beatSnapText = 'None'
 
 		if imgui.Button('-##beatminus') then
@@ -811,7 +810,7 @@ function st:imgui()
 		end
 
 		if self.beatSnap ~= 0 then
-			beatSnapText = '1/' .. self.beatSnapValues[self.beatSnap]
+			beatSnapText = '1/' .. self:getSnapValue()
 		end
 
 		imgui.SameLine()
@@ -983,27 +982,11 @@ function st:updateDecos()
 	end
 end
 
---[[
-function st:drawDecoList(decos)
-	for k, v in ipairs(decos) do
-		if not v.hide then
-			local ox, oy = v.x, v.y
-			v.x, v.y = ox - self.pan[1], oy - self.pan[2]
-			local success, err = pcall(v.drawSprite, v)
-			-- todo: look into differences between drawSprite and drawMirrored
-			-- for some reason drawMirrored causes weird things to happen sometimes, like a deco not drawing ontop another
-			-- nvm, why am i not using em.draw()?
-			
-			if err then print(err) end
-			v.x, v.y = ox, oy
-		end
-		print(k, v.layer, v.sprite)
-	end
-end]]
-
 st:setFgDraw(function(self)
-	local bgc = shuv.pal[self.bgColor] or {r=255,g=255,b=255}
-	local vc = shuv.pal[self.voidColor] or {r=255,g=255,b=255}
+	local palette = shuv.usePalette and shuv.pal or shuv.paldefault
+	
+	local bgc = palette[self.bgColor] or {r=255,g=255,b=255}
+	local vc = palette[self.voidColor] or {r=255,g=255,b=255}
 	love.graphics.clear(vc.r/255, vc.g/255, vc.b/255)
 	
 	local sw, sh = 600, 360
@@ -1040,12 +1023,12 @@ st:setFgDraw(function(self)
 		em.draw()
 		
 		love.graphics.setShader()
-		for k,v in pairs(cs.vfx.deco) do
+		for k,v in pairs(self.vfx.deco) do
 			if v.drawLayer == 'ontop' then
 				v:draw(true)
 			end
 		end
-		for k,v in pairs(cs.vfx.textdeco) do
+		for k,v in pairs(self.vfx.textdeco) do
 			if v.drawLayer == 'ontop' then
 				v:draw(true)
 			end
@@ -1054,31 +1037,6 @@ st:setFgDraw(function(self)
 		for _, v in pairs(self.renderDecos) do
 			v.x, v.y = v.originalX, v.originalY
 		end
-		--[[local sortedDecos = {}
-		for _, v in pairs(self.renderDecos) do
-			table.insert(sortedDecos, v)
-		end
-		
-		table.sort(sortedDecos, function(a, b)
-			local aOnTop = a.drawLayer == "ontop"
-			local bOnTop = b.drawLayer == "ontop"
-			if aOnTop ~= bOnTop then
-				return bOnTop
-			end
-			if aOnTop and bOnTop then -- i know ontop layering doesn't actually work ingame but whatever
-				if (a.layer or 0) ~= (b.layer or 0) then
-					return (a.layer or 0) < (b.layer or 0)
-				end
-				return (a._spawnTime or 0) < (b._spawnTime or 0)
-			end
-			if (a.layer or 0) ~= (b.layer or 0) then
-				return (a.layer or 0) < (b.layer or 0)
-			end
-			return (a._spawnTime or 0) < (b._spawnTime or 0)
-		end)
-		
-		love.graphics.setColor(1,1,1,1)
-			self:drawDecoList(sortedDecos)]]
 	end
 	
 	love.graphics.setColor(1, 0, 0)
