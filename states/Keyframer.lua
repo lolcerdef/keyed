@@ -1,9 +1,13 @@
 local st = Gamestate:new('Keyframer')
 
 st:setInit(function(self, level, variant, beat, preloadSoundData)
+	em.clear()
+	
 	love.keyboard.setTextInput(true)
 	self.gm = em.init("GameManager") -- <- does something, not much though
 	self.cmd = em.init("CommandHandler")
+	self.p._actualX = self.p.x
+	self.p._actualY = self.p.y
 	
 	self.isPlaying = false
 	mouse:disableGameplay()
@@ -305,6 +309,7 @@ function st:checkKeybinds()
 end
 
 function st:leave()
+	em.clear()
 	self.gm:stopLevel()
 	self.gm:resetLevel()
 	
@@ -419,9 +424,13 @@ function st:rebuildDecoObjects()
 	end
 	self.decoObjects = {}
 	self.renderDecos = {}
+	print("KILLED EVERYTHING")
 end
 
 st:setUpdate(function(self, dt)
+	self.p.x = self.p._actualX - self.pan[1]
+	self.p.y = self.p._actualY - self.pan[2]
+	
 	self:updateColorPalette()
 	self:setBGColor()
 	
@@ -785,6 +794,36 @@ function st:imgui()
 	helpers.SetNextWindowSize(200, 200, window_flag)
 	imgui.Begin("Viewport Settings ##keyframer",nil,inputFlag)
 		shuv.usePalette = helpers.InputBool("Use Palette", shuv.usePalette or false)
+		local beatSnapText = 'None'
+
+		if imgui.Button('-##beatminus') then
+			self.beatSnap = self.beatSnap - 1
+		end
+		imgui.SameLine()
+		if imgui.Button('+##beatplus') then
+			self.beatSnap = self.beatSnap + 1
+		end
+
+		if self.beatSnap == -2 then
+			self.beatSnap = #self.beatSnapValues
+		elseif self.beatSnap > #self.beatSnapValues then
+			self.beatSnap = -1
+		end
+
+		if self.beatSnap ~= 0 then
+			beatSnapText = '1/' .. self.beatSnapValues[self.beatSnap]
+		end
+
+		imgui.SameLine()
+		if self.beatSnap == -1 then
+			imgui.Text("Beat: 1/")
+			imgui.SameLine()
+			self.customBeatSnap = helpers.InputInt('##custombeat', self.customBeatSnap)
+			self.customBeatSnap = math.max(self.customBeatSnap, 1)
+		else
+			imgui.Text("Beat: " .. beatSnapText)
+		end
+		
 	imgui.End()
 	
 	local wantsLeave = false
@@ -841,6 +880,15 @@ local instantPropsText = {
 function st:updateDecos()
 	self.renderDecos = self.renderDecos or {}
 	for k, v in pairs(self.decos) do
+		if #v.events > 1 then
+			table.sort(v.events, function(a, b)
+				if a.time ~= b.time then
+					return a.time < b.time
+				end
+				return (a.order or 0) < (b.order or 0)
+			end)
+		end
+
 		if #v.events == 0 or self.editorBeat < v.events[1].time then
 			self.renderDecos[k] = nil
 			goto continue
@@ -853,16 +901,19 @@ function st:updateDecos()
 			if isText then
 				self.decoObjects[k] = em.init('TextDeco', {})
 				self.decoObjects[k].kind = "textdeco"
+				self.vfx.textdeco[k] = self.decoObjects[k]
 			else
 				self.decoObjects[k] = em.init('Deco', {})
 				self.decoObjects[k].kind = "deco"
+				self.vfx.deco[k] = self.decoObjects[k]
 			end
+			
 			isFirstOfID = true
 		end
 		
 		local deco = self.decoObjects[k]
 		deco.skipUpdate = true
-		deco.skipRender = true
+		deco.skipRender = false
 		
 		local instantProps = isText and instantPropsText or instantPropsDeco
 		
@@ -932,6 +983,7 @@ function st:updateDecos()
 	end
 end
 
+--[[
 function st:drawDecoList(decos)
 	for k, v in ipairs(decos) do
 		if not v.hide then
@@ -940,13 +992,14 @@ function st:drawDecoList(decos)
 			local success, err = pcall(v.drawSprite, v)
 			-- todo: look into differences between drawSprite and drawMirrored
 			-- for some reason drawMirrored causes weird things to happen sometimes, like a deco not drawing ontop another
+			-- nvm, why am i not using em.draw()?
 			
 			if err then print(err) end
 			v.x, v.y = ox, oy
 		end
 		print(k, v.layer, v.sprite)
 	end
-end
+end]]
 
 st:setFgDraw(function(self)
 	local bgc = shuv.pal[self.bgColor] or {r=255,g=255,b=255}
@@ -979,8 +1032,29 @@ st:setFgDraw(function(self)
 	
 	if self.drawDecos then
 		self:updateDecos()
+		for _, v in pairs(self.renderDecos) do
+			v.originalX, v.originalY = v.x, v.y
+			v.x, v.y = v.originalX - self.pan[1], v.originalY - self.pan[2]
+		end
 		
-		local sortedDecos = {}
+		em.draw()
+		
+		love.graphics.setShader()
+		for k,v in pairs(cs.vfx.deco) do
+			if v.drawLayer == 'ontop' then
+				v:draw(true)
+			end
+		end
+		for k,v in pairs(cs.vfx.textdeco) do
+			if v.drawLayer == 'ontop' then
+				v:draw(true)
+			end
+		end
+		
+		for _, v in pairs(self.renderDecos) do
+			v.x, v.y = v.originalX, v.originalY
+		end
+		--[[local sortedDecos = {}
 		for _, v in pairs(self.renderDecos) do
 			table.insert(sortedDecos, v)
 		end
@@ -1004,7 +1078,7 @@ st:setFgDraw(function(self)
 		end)
 		
 		love.graphics.setColor(1,1,1,1)
-			self:drawDecoList(sortedDecos)
+			self:drawDecoList(sortedDecos)]]
 	end
 	
 	love.graphics.setColor(1, 0, 0)
