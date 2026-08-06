@@ -912,6 +912,7 @@ function st:updateDecos()
 				spriteChanged = true
 			end
 			
+			deco._spawnTime = isFirstOfID and e.time or deco._spawnTime or 0
 			deco[p] = newValue
 			::nextprop::
 		end
@@ -921,21 +922,10 @@ function st:updateDecos()
 		else
 			if spriteChanged or deco.spr == nil then
 				deco:updateSprite()
-			else
-				deco:updateLayer()
 			end
 		end
 		
-		local layerBase
-		if deco.drawLayer == "fg" then
-			layerBase = 999
-		elseif deco.drawLayer == "bg" then
-			layerBase = -999
-		else
-			layerBase = 0
-		end
-		deco._actualOrder = layerBase + deco.drawOrder
-		deco._spawnOrder = isFirstOfID and v.time or deco._spawnOrder
+		deco:updateLayer() -- just in case
 		
 		self.renderDecos[k] = deco
 		::continue::
@@ -943,20 +933,24 @@ function st:updateDecos()
 end
 
 function st:drawDecoList(decos)
-	for _, v in ipairs(decos) do
+	for k, v in ipairs(decos) do
 		if not v.hide then
 			local ox, oy = v.x, v.y
 			v.x, v.y = ox - self.pan[1], oy - self.pan[2]
-			local success, err = pcall(v.drawMirrored, v)
+			local success, err = pcall(v.drawSprite, v)
+			-- todo: look into differences between drawSprite and drawMirrored
+			-- for some reason drawMirrored causes weird things to happen sometimes, like a deco not drawing ontop another
+			
 			if err then print(err) end
 			v.x, v.y = ox, oy
 		end
+		print(k, v.layer, v.sprite)
 	end
 end
 
 st:setFgDraw(function(self)
-	local bgc = shuv.pal[self.bgColor]
-	local vc = shuv.pal[self.voidColor]
+	local bgc = shuv.pal[self.bgColor] or {r=255,g=255,b=255}
+	local vc = shuv.pal[self.voidColor] or {r=255,g=255,b=255}
 	love.graphics.clear(vc.r/255, vc.g/255, vc.b/255)
 	
 	local sw, sh = 600, 360
@@ -998,15 +992,15 @@ st:setFgDraw(function(self)
 				return bOnTop
 			end
 			if aOnTop and bOnTop then -- i know ontop layering doesn't actually work ingame but whatever
-				if (a.drawOrder or 0) ~= (b.drawOrder or 0) then
-					return (a.drawOrder or 0) < (b.drawOrder or 0)
+				if (a.layer or 0) ~= (b.layer or 0) then
+					return (a.layer or 0) < (b.layer or 0)
 				end
-				return (a._spawnOrder or 0) < (b._spawnOrder or 0)
+				return (a._spawnTime or 0) < (b._spawnTime or 0)
 			end
-			if (a._actualOrder or 0) ~= (b._actualOrder or 0) then
-				return (a._actualOrder or 0) < (b._actualOrder or 0)
+			if (a.layer or 0) ~= (b.layer or 0) then
+				return (a.layer or 0) < (b.layer or 0)
 			end
-			return (a._spawnOrder or 0) < (b._spawnOrder or 0)
+			return (a._spawnTime or 0) < (b._spawnTime or 0)
 		end)
 		
 		love.graphics.setColor(1,1,1,1)
@@ -1016,7 +1010,7 @@ st:setFgDraw(function(self)
 	love.graphics.setColor(1, 0, 0)
 	love.graphics.setLineWidth(2)
 	love.graphics.rectangle("line", -self.pan[1] - 1, -self.pan[2] - 1, sw + 2, sh + 2)
-
+	
 	self:imgui()
 end)
 
