@@ -5,26 +5,21 @@
     - Deco Rows / done
       - Keyframes in that row / done
     - Markers (Like BPM changes, Bookmarks, Playsong, etc.) / done
-      - Better Marker drawing (maybe use the event's sprite instead of the playhead but upside down)
+      - Better Marker drawing? (maybe use the event's sprite instead of the playhead but upside down)
   - Deco List Selector (Like the Blender Obj list)
   - Keyframe/Marker/Event Editor/Adder
-  - Beat Snap / done
   - Playback Speed
   - Undo/Redo
-- Saving / done
+- Saving / done?
 - 3D Editing
 - Keybinds
-- Parenting, plus other params
 - 3D decos
 - 3D camera
-- USE A DECO OBJECT INSTEAD / done
-  - shader rendering
-  - Canvases (maybe make it so that you can look at different canvases?)
-  - Spritesheets
-  - AFTs
+- shader rendering
+- Canvases (maybe make it so that you can look at different canvases?)
+- AFTs
 - Tags
 - Selecting decos
 - Selecting decos through viewport
 - Cranky (for stuff like `p.x`, `p.y`, `p.drawScale` and whatever)
-- Advance Text Deco
 - Probably more I don't remember

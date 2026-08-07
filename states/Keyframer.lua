@@ -11,6 +11,7 @@ end
 
 st:setInit(function(self, level, variant, beat, preloadSoundData)
 	em.clear()
+	self.outline = true
 	
 	love.keyboard.setTextInput(true)
 	self.gm = em.init("GameManager") -- <- does something, not much though
@@ -89,6 +90,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		setBgColor = convertCol(0xFFF1C40F),
 		setBoolean = convertCol(0xFFFF7675),
 		setColor = convertCol(0xFFD980FA),
+		initObject = convertCol(0xFFFFFFFF)
 	}
 	
 	local loadTheseMarkers = {
@@ -251,6 +253,8 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 				end
 			elseif self.soundData and self.source.isPlaying then
 				self.source:stop()
+			else
+				self.unchangedEditorBeat = self.editorBeat
 			end
 		end,
 		'start/end playback',
@@ -430,6 +434,10 @@ function st:rebuildDecoObjects()
 	self.decoObjects = {}
 	self.renderDecos = {}
 	print("KILLED EVERYTHING")
+	--print(self.gm)
+	--print(self.cmd)
+	-- i wonder why gm is still here along with cmd
+	-- oh well
 end
 
 st:setUpdate(function(self, dt)
@@ -445,9 +453,14 @@ st:setUpdate(function(self, dt)
 	self.lastEditorBeat = self.editorBeat
 	
 	if self.isPlaying then
-		self.source:update(dt)
 		self.level.bpm = self:getBPMAtBeat(self.editorBeat)
-		self.editorBeat = self.source:getBeat() + self:getRetimeOffset(self.source:getBeat())
+		if self.source then
+			self.source:update(dt)
+			self.editorBeat = self.source:getBeat() + self:getRetimeOffset(self.source:getBeat())
+		else
+			self.unchangedEditorBeat = self.unchangedEditorBeat + (self.level.bpm/60) * love.timer.getDelta()
+			self.editorBeat = self.unchangedEditorBeat + self:getRetimeOffset(self.unchangedEditorBeat)
+		end
 		self.cBeat = self.editorBeat
 		self.timelineScroll = self.editorBeat - 50/self.beatSize
 		
@@ -609,7 +622,7 @@ function st:imgui()
 			
 			for i, row in ipairs(rows) do
 				local row_index = i - 1 - rowScroll
-				if row_index >= -8 and row_index < visible_rows then
+				if row_index >= 0 and row_index < visible_rows then
 					local ry = tracky + row_index * rowH
 					
 					if i % 2 == 0 then
@@ -876,6 +889,126 @@ local instantPropsText = {
 	specialcolour = true,
 }
 
+function st:updateDecoSprite(deco)
+	local sprite = deco.sprite
+	local template, animation, frame, speed = nil, nil, nil, nil
+	
+	if sprite ~= nil and sprite ~= '' and string.sub(sprite, 1, 1) ~= '@' then
+		template = sprite:match("([%w/%s]+)[!@#]")
+		animation = sprite:match("!(%w+)")
+		frame = sprite:match("#(%w+)")
+		speed = sprite:match("@(%w+)")
+		
+		if speed and (not animation) then
+			animation = 'all'
+		end
+		
+		local path = cLevel
+		local sprField = sprite
+		
+		if not pcall(function()
+			if not template then
+				if not self.vfx.decoSprites[sprite] then
+					local fpath = path..sprField
+					self.vfx.decoSprites[sprite] = love.graphics.newImage(fpath)
+				end
+			else
+				local fpath = path..template
+				if not self.vfx.decoTemplates[template] then
+					self.vfx.decoTemplates[template] = ez.newjson(fpath)
+				end
+			end
+		end) then
+			local filename = path..sprField
+			if template then
+				filename = path..template..'.json'
+			end
+			self:playbackError('Could not load deco file "' .. filename .. '"')
+			return
+		end
+	end
+	
+	if template and self.vfx.decoTemplates[template] then
+		deco.anim = self.vfx.decoTemplates[template]:instance()
+		if animation then
+			deco.anim:play(animation, tonumber(frame))
+			deco.animSpeed = tonumber(speed)
+			deco.animFrame = nil
+		else
+			deco.animSpeed = nil
+			
+			local f = frame
+			if f == 'RANDOM' then
+				f = ((deco.animFrame or 0) + math.random(1, self.vfx.decoTemplates[template].frames - 1)) % self.vfx.decoTemplates[template].frames
+			elseif f == 'TRUERANDOM' then
+				f = math.random(0, self.vfx.decoTemplates[template].frames - 1)
+			end
+			
+			deco.animFrame = tonumber(f)
+		end
+	else
+		deco.anim = nil
+		deco.animSpeed = nil
+		deco.animFrame = nil
+	end
+end
+
+function st:updateAdvanceTextDecos()
+	local lastTextSetTime = {}
+	for k, v in pairs(self.decos) do
+		if v.kind == "textdeco" then
+			local latest = nil
+			for _, e in ipairs(v.events) do
+				if e.textString ~= nil and e.time <= self.editorBeat then
+					if not latest or e.time > latest then
+						latest = e.time
+					end
+				end
+			end
+			lastTextSetTime[k] = latest or -math.huge
+		end
+	end
+	
+	local advanceCount = {}
+	
+	local function addTrigger(id, triggerTime)
+		local cutoff = lastTextSetTime[id]
+		if cutoff and triggerTime > cutoff then
+			advanceCount[id] = (advanceCount[id] or 0) + 1
+		end
+	end
+	
+	for _, m in ipairs(self.markers) do
+		if m.type == 'advancetextdeco' then
+			local repeats = m.repeats or 0
+			local repeatDelay = m.repeatDelay or 1
+			
+			for i = 0, repeats do
+				local t = m.time + (i * repeatDelay)
+				if t <= self.editorBeat then
+					helpers.targetDecosUsingSyntaxicID(function(id)
+						addTrigger(id, t)
+					end, m.id)
+				end
+			end
+		end
+	end
+	
+	for k, deco in pairs(self.decoObjects) do
+		if deco.kind == "textdeco" and deco.textTable and #deco.textTable > 0 then
+			local target = math.min(1 + (advanceCount[k] or 0), #deco.textTable)
+			
+			local text = ""
+			for i = 1, target do
+				text = text .. deco.textTable[i]
+			end
+			
+			deco.textPos = target
+			deco.text = text
+		end
+	end
+end
+
 function st:updateDecos()
 	self.renderDecos = self.renderDecos or {}
 	for k, v in pairs(self.decos) do
@@ -971,6 +1104,7 @@ function st:updateDecos()
 			deco:updateSprite()
 		else
 			if spriteChanged or deco.spr == nil then
+				self:updateDecoSprite(deco)
 				deco:updateSprite()
 			end
 		end
@@ -980,6 +1114,8 @@ function st:updateDecos()
 		self.renderDecos[k] = deco
 		::continue::
 	end
+	
+	self:updateAdvanceTextDecos()
 end
 
 st:setFgDraw(function(self)
