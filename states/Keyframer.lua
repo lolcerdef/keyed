@@ -11,7 +11,6 @@ end
 
 st:setInit(function(self, level, variant, beat, preloadSoundData)
 	em.clear()
-	cs.outline = true
 	
 	love.keyboard.setTextInput(true)
 	self.gm = em.init("GameManager") -- <- does something, not much though
@@ -361,6 +360,21 @@ function st:getBPMAtBeat(beat)
 	return bpm
 end
 
+function st:setOutline()
+	local bestTime = -math.huge
+	for _, m in ipairs(self.markers) do
+		if m.type == 'outline' and m.time <= self.editorBeat then
+			if m.time > bestTime then
+				if m.enable == false then
+					self.outline = nil
+				else
+					self.outline = m.color
+				end
+			end
+		end
+	end
+end
+
 function st:setBGColor()
 	local color = 0
 	local vcolor = nil
@@ -448,6 +462,7 @@ st:setUpdate(function(self, dt)
 	
 	self:updateColorPalette()
 	self:setBGColor()
+	self:setOutline()
 	
 	if self.editorBeat < (self.lastEditorBeat or self.editorBeat) - 0.0001 then
 		self:rebuildDecoObjects()
