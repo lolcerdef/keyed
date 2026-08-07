@@ -11,7 +11,7 @@ end
 
 st:setInit(function(self, level, variant, beat, preloadSoundData)
 	em.clear()
-	self.outline = true
+	cs.outline = true
 	
 	love.keyboard.setTextInput(true)
 	self.gm = em.init("GameManager") -- <- does something, not much though
@@ -432,6 +432,8 @@ function st:rebuildDecoObjects()
 	self.p._actualX = oldp_actualX
 	self.p._actualY = oldp_actualY
 	self.decoObjects = {}
+	self.vfx.deco = {} 
+	self.vfx.textdeco = {} 
 	self.renderDecos = {}
 	print("KILLED EVERYTHING")
 	--print(self.gm)
