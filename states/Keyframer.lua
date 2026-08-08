@@ -60,13 +60,11 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	-- id1 =  {kind = "deco", order = 2, events = {{time = 2, angle = 0, etc.}, etc.}},
 	-- otherid = {kind = "textdeco", order = 3, events = {{time = 0, angle = 0, etc.}, etc.}}
 	self.decos = {}
-	self.selectedDecos = {}
-	self.selectedKeyframes = {}
+	self.selectedEvents = { type = nil, events = {} }
 	
 	self.decoObjects = {}
 	
 	self.markers = {}
-	self.selectedMarker = nil
 	self.draggingMarker = nil
 	
 	self.markerColors = {
@@ -92,61 +90,9 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		initObject = convertCol(0xFFFFFFFF)
 	}
 	
-	local loadTheseMarkers = {
-		loadCustomFont = true,
-		newCanvas = true,
-		decoShader = true,
-		tags = true, 
-	} -- probably more i'm forgetting rn
-	-- tags inset events into self.playEvents, perhaps this could be used?
-	-- like maybe self.playEvents get rebuilt when a tag is added/removed/modified
-	-- and everything else looks in this?
-	-- tags are probably the only thing that does this no?
-	
 	if self.level then
-		self.gm:resetLevel()
-		
-		local decoCount = 0
-		for i, v in ipairs(self.level.events) do
-			decoCount = decoCount + 1
-			
-			--local t = v.type:lower()
-			if self.markerColors[v.type] then
-				table.insert(self.markers, self.level.events[i])
-				
-				if loadTheseMarkers[v.type] then
-					if Event.onLoad[v.type](v) then
-						self.drawDecos = false
-					end
-				end
-			elseif v.type == "deco" or v.type == "textdeco" then
-				if Event.onLoad[v.type](v) then
-					self.drawDecos = false
-				end
-				if v.type == "textdeco" then
-					v.text = v.textString
-				end
-				
-				if not self.decos[v.id] then
-					self.decos[v.id] = {}
-					self.decos[v.id].order = decoCount
-					self.decos[v.id].events = {}
-					self.decos[v.id].kind = v.type
-				end
-				table.insert(self.decos[v.id].events, self.level.events[i])
-				table.sort(self.decos[v.id].events, function(a, b)
-					if a.time == b.time then
-						return (a.order or 0) < (b.order or 0)
-					end
-					return a.time < b.time
-				end)
-			end
-		end
+		self:resetLoads()
 	end
-	
-	table.sort(self.timingInfo.timingPoints, function(a, b)
-		return a.beat < b.beat
-	end)
 	
 	self.mouseStartX = nil
 	self.mouseStartY = nil
@@ -176,10 +122,50 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		'save'
 	)
 	self:addKeybind(function()
-			
+			if self.selectedEvents.type == 'keyframe' then
+				local newEvents = {}
+				local touchedIds = {}
+				for i, v in ipairs(self:getSelectedList()) do
+					table.insert(newEvents, {type = 'deco', time = self.editorBeat, angle = v.angle, id = v.id})
+					touchedIds[v.id] = true
+				end
+				
+				if #newEvents > 1 then
+					self.cmd:startGroup()
+					self.cmd:executeNew(cmd.CreateMultiple,newEvents)
+					self.cmd:endGroup("Made "..#newEvents.." keyframes")
+				elseif #newEvents == 1 then
+					self.cmd:executeNew(cmd.CreateEvent, newEvents[1])
+				else
+					print("make what keyframe?")
+				end
+				
+				self:resetLoads()
+				
+				local newSelection = { type = 'keyframe', events = {} }
+				for id in pairs(touchedIds) do
+					local deco = self.decos[id]
+					if deco then
+						for _, ev in ipairs(deco.events) do
+							if ev.time == self.editorBeat then
+								newSelection.events[ev] = true
+							end
+						end
+					end
+				end
+				self.selectedEvents = newSelection
+			else
+				print("nothing selected?")
+			end
 		end,
 		'make keyframe',
 		'i'
+	)
+	self:addKeybind(function()
+			self:deleteSelectedEvents()
+		end,
+		'delete selected event',
+		'delete'
 	)
 	self:addKeybind(function()
 			
@@ -267,6 +253,61 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	)
 end)
 
+function st:resetLoads()
+	local loadTheseMarkers = {
+		loadCustomFont = true,
+		newCanvas = true,
+		--decoShader = true,
+		tags = true, 
+	} -- probably more i'm forgetting rn
+	-- tags inset events into self.playEvents, perhaps this could be used?
+	-- like maybe self.playEvents get rebuilt when a tag is added/removed/modified
+	-- and everything else looks in this?
+	-- tags are probably the only thing that does this no?
+	
+	self.gm:resetLevel()
+	local decoCount = 0
+	for i, v in ipairs(self.level.events) do
+		decoCount = decoCount + 1
+		
+		--local t = v.type:lower()
+		if self.markerColors[v.type] then
+			table.insert(self.markers, self.level.events[i])
+			
+			if loadTheseMarkers[v.type] then
+				if Event.onLoad[v.type](v) then
+					self.drawDecos = false
+				end
+			end
+		elseif v.type == "deco" or v.type == "textdeco" then
+			if Event.onLoad[v.type](v) then
+				self.drawDecos = false
+			end
+			if v.type == "textdeco" then
+				v.text = v.textString
+			end
+			
+			if not self.decos[v.id] then
+				self.decos[v.id] = {}
+				self.decos[v.id].order = decoCount
+				self.decos[v.id].events = {}
+				self.decos[v.id].kind = v.type
+			end
+			table.insert(self.decos[v.id].events, self.level.events[i])
+			table.sort(self.decos[v.id].events, function(a, b)
+				if a.time == b.time then
+					return (a.order or 0) < (b.order or 0)
+				end
+				return a.time < b.time
+			end)
+		end
+	end
+	
+	table.sort(self.timingInfo.timingPoints, function(a, b)
+		return a.beat < b.beat
+	end)
+end
+
 function st:addKeybind(func, name, k1, k2, k3)
 	table.insert(self.keybinds, { func = func, name = name, k1 = k1, k2 = k2, k3 = k3 })
 end
@@ -309,8 +350,74 @@ function st:leave()
 	cs:init()
 end
 
-function st:getSnapValue()
+function st:getBeatSnapValue()
 	return self.beatSnapValues[self.beatSnap] or self.customBeatSnap
+end
+
+function st:getBeatStep()
+	local beatStep = 1
+	if self.beatSnap ~= 0 then
+		local snapValue = self:getBeatSnapValue()
+		beatStep = 1 / snapValue
+	end
+	return beatStep
+end
+
+function st:getAngleSnapValue()
+	return 16
+end
+function st:getAngleSnapValue()
+	return 360/16
+end
+
+--todo: fix where it still renders as if the events are still there
+function st:deleteSelectedEvents()
+	local list = self:getSelectedList()
+	if #list > 0 then
+		if #list > 1 then
+			self.cmd:startGroup()
+			self.cmd:executeNew(cmd.RemoveMultiple, list)
+			self.cmd:endGroup("Deleted "..#list.." events")
+		else
+			self.cmd:executeNew(cmd.RemoveEvent, list[1])
+		end
+		
+		self:clearSelection()
+		self:resetLoads()
+	else
+		print("nothing selected?")
+	end
+end
+function st:clearSelection()
+	self.selectedEvents = { type = nil, events = {} }
+end
+function st:selectSingle(kind, obj)
+	self.selectedEvents = { type = kind, events = { [obj] = true } }
+end
+--todo:
+function st:addSelect(kind, obj)
+	
+end
+function st:isSelected(kind, obj)
+	return self.selectedEvents.type == kind and self.selectedEvents.events[obj] == true
+end
+function st:getFirstSelected()
+	local obj = next(self.selectedEvents.events)
+	return obj, self.selectedEvents.type
+end
+function st:getSelectedList()
+	local list = {}
+	for obj in pairs(self.selectedEvents.events) do
+		list[#list + 1] = obj
+	end
+	return list
+end
+function st:getSelectedCount()
+	local count = 0
+	for _ in pairs(self.selectedEvents.events) do
+		count = count + 1
+	end
+	return count
 end
 
 function st:playbackError(message)
@@ -515,13 +622,49 @@ function st:imgui()
 		self.resetwindows = false
 	end
 	
+	helpers.SetNextWindowPos(950, 50, window_flag)
+	helpers.SetNextWindowSize(250, 450, window_flag)
+	imgui.Begin("Event Editor##keyframer",nil,inputFlag)
+		local selectedCount = self:getSelectedCount()
+		if selectedCount > 1 then
+			
+		elseif selectedCount == 1 then
+			local selectedEvent = self:getFirstSelected()
+			imgui.Text("Editing " .. Event.info[selectedEvent.type].name)
+			
+			imgui.Separator()
+			local beatStep = 0.01
+			if self.beatSnap ~= 0 then
+				beatStep = 1 / self:getBeatSnapValue()
+			end
+			Event.property(selectedEvent, 'decimal', 'time', 'Beat to activate on', { step = beatStep })
+			Event.property(selectedEvent, 'decimal', 'angle', 'Angle to activate at', { step = 1 })
+			if self.variant and (not Event.info[selectedEvent.type].storeInChart) and (not Event.info[selectedEvent.type].hideVariant) then
+				Event.property(selectedEvent, 'enum', 'variant', 'Make this event specific to a variant', {enum = 'variants', optional = true, default = self.variant.name})
+			end
+			if (not Event.info[selectedEvent.type].hideOrder) then
+				Event.property(selectedEvent, 'int', 'order', 'Order to run on, lower = first', { optional = true, default = 0 })
+			end
+			if Event.editorProperties[selectedEvent.type] then --need to make it check for id.
+				Event.editorProperties[selectedEvent.type](selectedEvent)
+			end
+			imgui.Separator()
+			if imgui.Button('Delete event') then
+				self:deleteSelectedEvents()
+			end
+		else
+			imgui.Text("Select an event to edit it")
+		end
+		
+	imgui.End()
+	
 	helpers.SetNextWindowPos(470, 500, window_flag)
-	helpers.SetNextWindowSize(700, 200, window_flag)
+	helpers.SetNextWindowSize(730, 220, window_flag)
 	imgui.Begin("Timeline ##keyframer",nil,inputFlag)
 		--local drawlist = imgui.GetWindowDrawList()
 		
 		local function snapBeat(b)
-			local subdiv = self:getSnapValue() or 1
+			local subdiv = self:getBeatSnapValue() or 1
 			return math.floor(b * subdiv + 0.5) / subdiv
 		end
 		local function clampedSnap(b)
@@ -666,8 +809,8 @@ function st:imgui()
 					line(x, cursor.y, x, cursor.y + rulerH, lineHiC, 1)
 					text(x + 3, cursor.y + 2, textC, string.format("%db", b))
 					if beatSize > 40 then
-						for q = 1, self:getSnapValue() do
-							local qx = beatToX(b + q * 1/self:getSnapValue())
+						for q = 1, self:getBeatSnapValue() do
+							local qx = beatToX(b + q * 1/self:getBeatSnapValue())
 							if qx >= trackX and qx <= trackX + trackAreaW then
 								line(qx, cursor.y + rulerH * 0.6, qx, cursor.y + rulerH, lineC, 1)
 							end
@@ -681,7 +824,7 @@ function st:imgui()
 				local x = beatToX(m.time)
 				if x >= trackX and x <= trackX + trackAreaW + diamondSize then
 					local mc = self.markerColors[m.type] or {1,1,1,1}
-					local sel = self.selectedMarker == m
+					local sel = self:isSelected("marker", m)
 					local c = sel and keySelC or mc
 					line(x, tracky, x, bottomY, c, sel and 2 or 1)
 					triangle(x - 6, bottomY, x + 6, bottomY, x, bottomY - 8, c)
@@ -704,7 +847,7 @@ function st:imgui()
 						local y = ry + rowH / 2
 						local x = beatToX(ev.time)
 						local endX = beatToX(ev.time + (ev.duration or 0))
-						local c = self.selectedKeyframes[ev] and keySelC or keyC
+						local c = self:isSelected("keyframe", ev) and keySelC or keyC
 						
 						if x >= trackX - diamondSize and x <= trackX + trackAreaW + diamondSize then
 							line(x, y, endX, y, c, 2)
@@ -746,10 +889,11 @@ function st:imgui()
 							closestMarker, closestDist = m, d
 						end
 					end
-					self.selectedMarker = closestMarker
 					self.draggingMarker = closestMarker
 					if closestMarker then
-						self.selectedKeyframes = {}
+						self:selectSingle("marker", closestMarker)
+					else
+						self:clearSelection()
 					end
 				end
 				
@@ -773,10 +917,10 @@ function st:imgui()
 							closest, closest_dist = ev, d
 						end
 					end
-					self.selectedKeyframes = {}
 					if closest then
-						self.selectedKeyframes[closest] = true
-						self.selectedMarker = nil
+						self:selectSingle("keyframe", closest)
+					else
+						self:clearSelection()
 					end
 					self.draggingKey = closest
 					self.draggingKeyRow = closest and row or nil
@@ -819,7 +963,7 @@ function st:imgui()
 	imgui.End()
 	
 	helpers.SetNextWindowPos(270, 500, window_flag)
-	helpers.SetNextWindowSize(200, 200, window_flag)
+	helpers.SetNextWindowSize(200, 220, window_flag)
 	imgui.Begin("Settings ##keyframer",nil,inputFlag)
 		shuv.usePalette = helpers.InputBool("Use Palette", shuv.usePalette or false)
 		
@@ -840,20 +984,35 @@ function st:imgui()
 		end
 
 		if self.beatSnap ~= 0 then
-			beatSnapText = '1/' .. self:getSnapValue()
+			beatSnapText = '1/' .. self:getBeatSnapValue()
 		end
 
 		imgui.SameLine()
 		if self.beatSnap == -1 then
-			imgui.Text("Beat: 1/")
+			imgui.Text("Beat Snap: 1/")
 			imgui.SameLine()
 			self.customBeatSnap = helpers.InputInt('##custombeat', self.customBeatSnap)
 			self.customBeatSnap = math.max(self.customBeatSnap, 1)
 		else
-			imgui.Text("Beat: " .. beatSnapText)
+			imgui.Text("Beat Snap: " .. beatSnapText)
 		end
 		
+		self.gridScale = helpers.InputInt("Grid Size", self.gridScale)
+		
 	imgui.End()
+	
+	if self.errorDialogue then
+		helpers.SetNextWindowPos(400, 200, window_flag)
+		helpers.SetNextWindowSize(400, 200, window_flag)
+		self.errorDialogue = imgui.Begin(self.errorHeader, true)
+
+		imgui.TextWrapped(self.errorMessage)
+
+		if imgui.Button('OK') then
+			self.errorDialogue = false
+		end
+		imgui.End()
+	end
 	
 	local wantsLeave = false
 	
@@ -870,22 +1029,6 @@ function st:imgui()
 			if imgui.Button("No") then
 				wantsLeave = true
 			end
-		imgui.End()
-	end
-	
-	if self.errorDialogue then
-		helpers.SetNextWindowPos(400, 200, window_flag)
-		helpers.SetNextWindowSize(400, 200, window_flag)
-		self.errorDialogue = imgui.Begin(self.errorHeader, true)
-
-		imgui.TextWrapped(self.errorMessage)
-
-		if imgui.Button('OK') then
-			self.errorDialogue = false
-			if not self.drawDecos then
-				wantsLeave = true
-			end
-		end
 		imgui.End()
 	end
 	
@@ -1167,10 +1310,13 @@ st:setFgDraw(function(self)
 	end
 	
 	if self.drawDecos then
+		love.graphics.setColor(1, 1, 1, 1)
 		self:updateDecos()
 		for _, v in pairs(self.renderDecos) do
-			v.originalX, v.originalY = v.x, v.y
-			v.x, v.y = v.originalX - self.pan[1], v.originalY - self.pan[2]
+			if not v.parentid or v.parentid == '' then
+				v.originalX, v.originalY = v.x, v.y
+				v.x, v.y = v.originalX - self.pan[1], v.originalY - self.pan[2]
+			end
 		end
 		
 		em.draw()
@@ -1188,7 +1334,9 @@ st:setFgDraw(function(self)
 		end
 		
 		for _, v in pairs(self.renderDecos) do
-			v.x, v.y = v.originalX, v.originalY
+			if not v.parentid or v.parentid == '' then
+				v.x, v.y = v.originalX, v.originalY
+			end
 		end
 	end
 	
