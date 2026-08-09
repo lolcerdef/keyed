@@ -87,7 +87,8 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		setBgColor = convertCol(0xFFF1C40F),
 		setBoolean = convertCol(0xFFFF7675),
 		setColor = convertCol(0xFFD980FA),
-		initObject = convertCol(0xFFFFFFFF)
+		initObject = convertCol(0xFFFFFFFF),
+		paddles = convertCol(0xFFB8CDFF)
 	}
 	
 	if self.level then
@@ -116,14 +117,15 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	
 	self:addKeybind(function()
 			LevelManager:saveLevel(self.level, cLevel, true, self.variant)
+			self.p:hurtPulse()
 			print("saved")
 		end,
 		'save',
 		'save'
 	)
 	self:addKeybind(function()
+			local newEvents = {}
 			if self.selectedEvents.type == 'keyframe' then
-				local newEvents = {}
 				local touchedIds = {}
 				for i, v in ipairs(self:getSelectedList()) do
 					table.insert(newEvents, {type = 'deco', time = self.editorBeat, angle = v.angle, id = v.id})
@@ -154,11 +156,42 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 					end
 				end
 				self.selectedEvents = newSelection
+			elseif self.selectedEvents.type == 'marker' then
+				local touchedTypes = {}
+				for i, v in ipairs(self:getSelectedList()) do
+					if v.type ~= 'play' and v.type ~= 'showResults' then
+						local copy = helpers.copy(v)
+						copy.time = self.editorBeat
+						table.insert(newEvents, copy)
+						touchedTypes[v.type] = true
+					end
+				end
+				
+				if #newEvents > 1 then
+					self.cmd:startGroup()
+					self.cmd:executeNew(cmd.CreateMultiple,newEvents)
+					self.cmd:endGroup("Made "..#newEvents.." keyframes")
+				elseif #newEvents == 1 then
+					self.cmd:executeNew(cmd.CreateEvent, newEvents[1])
+				else
+					print("make what events?")
+				end
+				
+				self:resetLoads()
+				
+				local newSelection = { type = 'marker', events = {} }
+				for _, m in ipairs(self.markers) do
+					if touchedTypes[m.type] and m.time == self.editorBeat then
+						newSelection.events[m] = true
+					end
+				end
+				
+				self.selectedEvents = newSelection
 			else
 				print("nothing selected?")
 			end
 		end,
-		'make keyframe',
+		'make selected event',
 		'i'
 	)
 	self:addKeybind(function()
@@ -252,6 +285,19 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		'exit',
 		'back'
 	)
+	self:addKeybind(function() 
+		self.cmd:undo()
+		self:resetLoads()
+	end,
+	'undo','ctrl','z')
+
+	self:addKeybind(function()
+		self.cmd:redo()
+		self:resetLoads()
+	end,
+	'redo','ctrl','y')
+	
+	self:rebuildDecoObjects()
 end)
 
 function st:resetLoads()
@@ -313,12 +359,16 @@ function st:resetLoads()
 			end)
 		end
 	end
+	table.sort(self.markers, function(a, b)
+		if a.time == b.time then
+			return (a.order or 0) < (b.order or 0)
+		end
+		return a.time < b.time
+	end)
 	
 	table.sort(self.timingInfo.timingPoints, function(a, b)
 		return a.beat < b.beat
 	end)
-	
-	bbp.utils.printTable(self.timingInfo)
 end
 
 function st:addKeybind(func, name, k1, k2, k3)
@@ -383,7 +433,6 @@ function st:getAngleSnapValue()
 	return 360/16
 end
 
---todo: fix where it still renders as if the events are still there
 function st:deleteSelectedEvents()
 	local list = self:getSelectedList()
 	if #list > 0 then
@@ -431,6 +480,10 @@ function st:getSelectedCount()
 		count = count + 1
 	end
 	return count
+end
+
+function st:clearMultiselectVars()
+	self:clearSelection()
 end
 
 function st:playbackError(message)
@@ -512,6 +565,179 @@ function st:setBGColor()
 	self.voidColor = vcolor or self.voidColor
 end
 
+function st:updatePlayer()
+	if not (self.p and self.p.paddles) then
+		return
+	end
+	local numPaddles = #self.p.paddles
+	
+	local paddleEvents = {}
+	local easeEvents = {}
+	for _, m in ipairs(self.markers) do
+		if m.type == 'paddles' and m.time <= self.editorBeat then
+			table.insert(paddleEvents, m)
+		end
+		if m.type == 'ease' and m.time <= self.editorBeat and m.var:sub(1,2) == 'p.' then
+			table.insert(easeEvents, m)
+		end
+	end
+	
+	for i = 1, numPaddles do
+		local paddle = self.p.paddles[i]
+		for _, e in ipairs(paddleEvents) do
+			if e.enabled ~= nil then
+				local paddleStart, paddleEnd = e.paddle, e.paddle
+				if e.paddle == 0 then
+					paddleStart, paddleEnd = 1, numPaddles
+				end
+				if i >= paddleStart and i <= paddleEnd then
+					paddle.enabled = e.enabled
+				end
+			end
+		end
+		
+		for _, prop in ipairs({ { key = 'newAngle', field = 'baseAngle' }, { key = 'newWidth', field = 'paddleSize' } }) do
+			local proppaddleEvents = {}
+			for _, e in ipairs(paddleEvents) do
+				if e[prop.key] ~= nil then
+					local paddleStart, paddleEnd = e.paddle, e.paddle
+					if e.paddle == 0 then
+						paddleStart, paddleEnd = 1, numPaddles
+					end
+					if i >= paddleStart and i <= paddleEnd then
+						table.insert(proppaddleEvents, e)
+					end
+				end
+			end
+			
+			if #proppaddleEvents > 0 then
+				local base = paddle[prop.field] or 0
+				for j = 1, #proppaddleEvents - 1 do
+					base = proppaddleEvents[j][prop.key]
+				end
+
+				local e = proppaddleEvents[#proppaddleEvents]
+				local target = e[prop.key]
+				local ease = e.ease or 'linear'
+				local duration = e.duration or 0
+				local t = (duration > 0)
+					and helpers.clamp((self.editorBeat - e.time) / duration, 0, 1)
+					or 1
+
+				paddle[prop.field] = helpers.interpolate(base, target, t, ease)
+			end
+		end
+		
+		local heightpaddleEvents = {}
+		for _, e in ipairs(paddleEvents) do
+			if e.newHeight ~= nil then
+				table.insert(heightpaddleEvents, e)
+			end
+		end
+		if #heightpaddleEvents > 0 then
+			local base = paddle.paddleWidth or 0
+			for j = 1, #heightpaddleEvents - 1 do
+				base = heightpaddleEvents[j].newHeight
+			end
+			
+			local e = heightpaddleEvents[#heightpaddleEvents]
+			local target = e.newHeight
+			local ease = e.ease or 'linear'
+			local duration = e.duration or 0
+			local t = (duration > 0)
+				and helpers.clamp((self.editorBeat - e.time) / duration, 0, 1)
+				or 1
+			
+			paddle.paddleWidth = helpers.interpolate(base, target, t, ease)
+		end
+	end
+	
+	local function resolveEaseTarget(var)
+		local varSplit = {}
+		for v in string.gmatch(var, "([^.]+)") do
+			if tonumber(v) then
+				return nil, nil
+			end
+			table.insert(varSplit, v)
+		end
+		if #varSplit < 2 then
+			return nil, nil
+		end
+		local target = self
+		for i = 1, #varSplit - 1 do
+			local key = varSplit[i]
+			if type(target) ~= 'table' or target[key] == nil then
+				return nil, nil
+			end
+			target = target[key]
+		end
+		local field = varSplit[#varSplit]
+		if type(target) ~= 'table' or type(target[field]) ~= 'number' then
+			return nil, nil
+		end
+		return target, field
+	end
+	
+	local instances = {}
+	for _, e in ipairs(easeEvents) do
+		if e.mode ~= 'setRandom' and e.mode ~= 'addRandom' then
+			local repeats = e.repeats or 0
+			local repeatDelay = e.repeatDelay or 1
+			for r = 0, repeats do
+				local t = e.time + r * repeatDelay
+				if t <= self.editorBeat then
+					table.insert(instances, {
+						time = t, order = e.order, var = e.var, mode = e.mode,
+						start = e.start, value = e.value,
+						duration = e.duration, ease = e.ease,
+					})
+				end
+			end
+		end
+	end
+	table.sort(instances, function(a, b)
+		if a.time == b.time then
+			return (a.order or 0) < (b.order or 0)
+		end
+		return a.time < b.time
+	end)
+	
+	local groups, groupOrder = {}, {}
+	for _, inst in ipairs(instances) do
+		local target, field = resolveEaseTarget(inst.var)
+		if target then
+			if not groups[inst.var] then
+				groups[inst.var] = { target = target, field = field, events = {} }
+				table.insert(groupOrder, inst.var)
+			end
+			table.insert(groups[inst.var].events, inst)
+		end
+	end
+	
+	for _, key in ipairs(groupOrder) do
+		local group = groups[key]
+		local events = group.events
+		local target, field = group.target, group.field
+		
+		local base = target[field] or 0
+		for j = 1, #events - 1 do
+			local ev = events[j]
+			base = (ev.mode == 'add') and (base + (ev.value or 0)) or (ev.value or base)
+		end
+		
+		local e = events[#events]
+		local startVal = e.start or base
+		local endVal = (e.mode == 'add') and (startVal + (e.value or 0)) or (e.value or startVal)
+		local ease = e.ease or 'linear'
+		local duration = e.duration or 0
+		local t = (duration > 0)
+			and helpers.clamp((self.editorBeat - e.time) / duration, 0, 1)
+			or 1
+		
+		target[field] = helpers.interpolate(startVal, endVal, t, ease)
+	end
+end
+
 function st:updateColorPalette()
 	shuv.resetPal()
 	
@@ -583,6 +809,7 @@ st:setUpdate(function(self, dt)
 	self:updateColorPalette()
 	self:setBGColor()
 	self:setOutline()
+	self:updatePlayer()
 	
 	if self.editorBeat < (self.lastEditorBeat or self.editorBeat) - 0.0001 then
 		self:rebuildDecoObjects()
@@ -646,7 +873,7 @@ function st:imgui()
 			imgui.Text("Editing " .. Event.info[selectedEvent.type].name)
 			
 			imgui.Separator()
-			if not selectedEvent.type == 'play' then
+			if not (selectedEvent.type == 'play') then
 				local beatStep = 0.01
 				if self.beatSnap ~= 0 then
 					beatStep = 1 / self:getBeatSnapValue()
@@ -846,7 +1073,7 @@ function st:imgui()
 					line(x, tracky, x, bottomY, c, sel and 2 or 1)
 					triangle(x - 6, bottomY, x + 6, bottomY, x, bottomY - 8, c)
 					
-					local t = m.name or m.type
+					local t = m.name or m.var or m.type
 					text(x, bottomY - 7, c, t, -90)
 					if m.duration then
 						line(x, bottomY, beatToX(m.time + (m.duration or 0)), bottomY, c, 2)
