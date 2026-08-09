@@ -163,6 +163,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	)
 	self:addKeybind(function()
 			self:deleteSelectedEvents()
+			self:rebuildDecoObjects()
 		end,
 		'delete selected event',
 		'delete'
@@ -266,6 +267,11 @@ function st:resetLoads()
 	-- tags are probably the only thing that does this no?
 	
 	self.gm:resetLevel()
+	self.markers = {}
+	for _, deco in pairs(self.decos) do
+		deco.events = {}
+	end
+	
 	local decoCount = 0
 	for i, v in ipairs(self.level.events) do
 		decoCount = decoCount + 1
@@ -278,6 +284,11 @@ function st:resetLoads()
 				if Event.onLoad[v.type](v) then
 					self.drawDecos = false
 				end
+			end
+			if v.type == 'play' then
+				self.timingInfo.initial = {bpm = v.bpm, timeOffsetSeconds = v.offset, beatOffset = v.time}
+			elseif v.type == 'setBPM' then
+				table.insert(self.timingInfo.timingPoints,{beat = event.time, bpm = event.bpm})
 			end
 		elseif v.type == "deco" or v.type == "textdeco" then
 			if Event.onLoad[v.type](v) then
@@ -306,6 +317,8 @@ function st:resetLoads()
 	table.sort(self.timingInfo.timingPoints, function(a, b)
 		return a.beat < b.beat
 	end)
+	
+	bbp.utils.printTable(self.timingInfo)
 end
 
 function st:addKeybind(func, name, k1, k2, k3)
@@ -633,24 +646,28 @@ function st:imgui()
 			imgui.Text("Editing " .. Event.info[selectedEvent.type].name)
 			
 			imgui.Separator()
-			local beatStep = 0.01
-			if self.beatSnap ~= 0 then
-				beatStep = 1 / self:getBeatSnapValue()
-			end
-			Event.property(selectedEvent, 'decimal', 'time', 'Beat to activate on', { step = beatStep })
-			Event.property(selectedEvent, 'decimal', 'angle', 'Angle to activate at', { step = 1 })
-			if self.variant and (not Event.info[selectedEvent.type].storeInChart) and (not Event.info[selectedEvent.type].hideVariant) then
-				Event.property(selectedEvent, 'enum', 'variant', 'Make this event specific to a variant', {enum = 'variants', optional = true, default = self.variant.name})
-			end
-			if (not Event.info[selectedEvent.type].hideOrder) then
-				Event.property(selectedEvent, 'int', 'order', 'Order to run on, lower = first', { optional = true, default = 0 })
-			end
-			if Event.editorProperties[selectedEvent.type] then --need to make it check for id.
-				Event.editorProperties[selectedEvent.type](selectedEvent)
-			end
-			imgui.Separator()
-			if imgui.Button('Delete event') then
-				self:deleteSelectedEvents()
+			if not selectedEvent.type == 'play' then
+				local beatStep = 0.01
+				if self.beatSnap ~= 0 then
+					beatStep = 1 / self:getBeatSnapValue()
+				end
+				Event.property(selectedEvent, 'decimal', 'time', 'Beat to activate on', { step = beatStep })
+				Event.property(selectedEvent, 'decimal', 'angle', 'Angle to activate at', { step = 1 })
+				if self.variant and (not Event.info[selectedEvent.type].storeInChart) and (not Event.info[selectedEvent.type].hideVariant) then
+					Event.property(selectedEvent, 'enum', 'variant', 'Make this event specific to a variant', {enum = 'variants', optional = true, default = self.variant.name})
+				end
+				if (not Event.info[selectedEvent.type].hideOrder) then
+					Event.property(selectedEvent, 'int', 'order', 'Order to run on, lower = first', { optional = true, default = 0 })
+				end
+				if Event.editorProperties[selectedEvent.type] then --need to make it check for id.
+					Event.editorProperties[selectedEvent.type](selectedEvent)
+				end
+				imgui.Separator()
+				if imgui.Button('Delete event') then
+					self:deleteSelectedEvents()
+				end
+			else
+				imgui.Text("No.")
 			end
 		else
 			imgui.Text("Select an event to edit it")
@@ -1180,7 +1197,7 @@ function st:updateDecos()
 				return (a.order or 0) < (b.order or 0)
 			end)
 		end
-
+		
 		if #v.events == 0 or self.editorBeat < v.events[1].time then
 			self.renderDecos[k] = nil
 			goto continue
@@ -1219,6 +1236,17 @@ function st:updateDecos()
 				 'recolor', 'outline', 'effectCanvas', 'effectCanvasRaw','effectCanvasType', 'hide', 'parentid', 'rotationMode',
 				 'onlyScaleDistance','mirror','tiling', 'colordither','exclusiveMirror','shader', 'alphadither', 'ditherpercent'}
 		
+		-- Snapshot the deco's pristine starting values ONCE, when it's created.
+		-- These never get overwritten by interpolation, so every frame accumulates
+		-- from the same known origin instead of from whatever value is currently
+		-- sitting on the object (which may already be mid-tween).
+		if isFirstOfID then
+			deco._baseProps = {}
+			for _, p in ipairs(props) do
+				deco._baseProps[p] = deco[p]
+			end
+		end
+		
 		local spriteChanged = false
 		
 		for _, p in ipairs(props) do
@@ -1234,7 +1262,7 @@ function st:updateDecos()
 			end
 			if #propEvents == 0 then goto nextprop end
 			
-			local base = deco[p]
+			local base = deco._baseProps[p]
 			for i = 1, #propEvents - 1 do
 				local e = propEvents[i]
 				base = ((e.mode == "add" and type(e[p]) == "number") and not instantProps[p]) and (base + e[p]) or e[p]

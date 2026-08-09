@@ -7,7 +7,8 @@
     - Markers (Like BPM changes, Bookmarks, Playsong, etc.) / done
       - Better Marker drawing? (maybe use the event's sprite instead of the playhead but upside down)
   - Deco List Selector (Like the Blender Obj list)
-  - Keyframe/Marker/Event Editor/Adder
+  - Event Palette 
+  - Event Editor / done
   - Playback Speed
   - Undo/Redo
 - Saving / done?
