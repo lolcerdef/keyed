@@ -57,8 +57,8 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	self.drawDecos = true
 	
 	-- list of deco ids
-	-- id1 =  {kind = "deco", order = 2, events = {{time = 2, angle = 0, etc.}, etc.}},
-	-- otherid = {kind = "textdeco", order = 3, events = {{time = 0, angle = 0, etc.}, etc.}}
+	-- deco:id1 =  {id = "id1", kind = "deco", order = 2, events = {{time = 2, angle = 0, etc.}, etc.}},
+	-- textdeco:otherid = {id = 'otherid', kind = "textdeco", order = 3, events = {{time = 0, angle = 0, etc.}, etc.}}
 	self.decos = {}
 	self.selectedEvents = { type = nil, events = {} }
 	
@@ -126,10 +126,10 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	self:addKeybind(function()
 			local newEvents = {}
 			if self.selectedEvents.type == 'keyframe' then
-				local touchedIds = {}
+				local touchedKeys = {}
 				for i, v in ipairs(self:getSelectedList()) do
-					table.insert(newEvents, {type = 'deco', time = self.editorBeat, angle = v.angle, id = v.id})
-					touchedIds[v.id] = true
+					table.insert(newEvents, {type = v.type, time = self.editorBeat, angle = v.angle, id = v.id})
+					touchedKeys[v.type .. ":" .. v.id] = true
 				end
 				
 				if #newEvents > 1 then
@@ -145,8 +145,8 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 				self:resetLoads()
 				
 				local newSelection = { type = 'keyframe', events = {} }
-				for id in pairs(touchedIds) do
-					local deco = self.decos[id]
+				for key in pairs(touchedKeys) do
+					local deco = self.decos[key]
 					if deco then
 						for _, ev in ipairs(deco.events) do
 							if ev.time == self.editorBeat then
@@ -314,9 +314,7 @@ function st:resetLoads()
 	
 	self.gm:resetLevel()
 	self.markers = {}
-	for _, deco in pairs(self.decos) do
-		deco.events = {}
-	end
+	self.decos = {}
 	
 	local decoCount = 0
 	for i, v in ipairs(self.level.events) do
@@ -344,14 +342,16 @@ function st:resetLoads()
 				v.text = v.textString
 			end
 			
-			if not self.decos[v.id] then
-				self.decos[v.id] = {}
-				self.decos[v.id].order = decoCount
-				self.decos[v.id].events = {}
-				self.decos[v.id].kind = v.type
+			local key = v.type .. ":" .. v.id
+			if not self.decos[key] then
+				self.decos[key] = {}
+				self.decos[key].order = decoCount
+				self.decos[key].events = {}
+				self.decos[key].kind = v.type
+				self.decos[key].id = v.id
 			end
-			table.insert(self.decos[v.id].events, self.level.events[i])
-			table.sort(self.decos[v.id].events, function(a, b)
+			table.insert(self.decos[key].events, self.level.events[i])
+			table.sort(self.decos[key].events, function(a, b)
 				if a.time == b.time then
 					return (a.order or 0) < (b.order or 0)
 				end
@@ -874,6 +874,8 @@ function st:imgui()
 			
 			imgui.Separator()
 			if not (selectedEvent.type == 'play') then
+				local oldId = selectedEvent.id
+				
 				local beatStep = 0.01
 				if self.beatSnap ~= 0 then
 					beatStep = 1 / self:getBeatSnapValue()
@@ -890,6 +892,11 @@ function st:imgui()
 					Event.editorProperties[selectedEvent.type](selectedEvent)
 				end
 				imgui.Separator()
+				
+				if oldId ~= selectedEvent.id and selectedEvent.id ~= '' then
+					self:resetLoads()
+				end
+				
 				if imgui.Button('Delete event') then
 					self:deleteSelectedEvents()
 				end
@@ -1002,7 +1009,7 @@ function st:imgui()
 		
 		local rows = {}
 		for id, deco in pairs(self.decos) do
-			rows[#rows + 1] = { id = id, order = deco.order or 0, events = deco.events or {} }
+			rows[#rows + 1] = { key = key, id = deco.id, kind = deco.kind, order = deco.order or 0, events = deco.events or {} }
 		end
 		table.sort(rows, function(a, b) return a.order < b.order end)
 		
@@ -1034,7 +1041,7 @@ function st:imgui()
 					end
 					
 					line(cursor.x, ry + rowH, cursor.x + avail.x, ry + rowH, lineC, 1)
-					text(cursor.x + 8, ry + rowH / 2 - 7, textC, tostring(row.id))
+					text(cursor.x + 8, ry + rowH / 2 - 7, textC, row.id .. (row.kind == "textdeco" and " [text]" or " [norm]"))
 				end
 			end
 			
@@ -1375,13 +1382,14 @@ function st:updateAdvanceTextDecos()
 	
 	local advanceCount = {}
 	
-	local function addTrigger(id, triggerTime)
-		local cutoff = lastTextSetTime[id]
+	local function addTrigger(rawId, triggerTime)
+		local key = "textdeco:" .. rawId
+		local cutoff = lastTextSetTime[key]
 		if cutoff and triggerTime > cutoff then
-			advanceCount[id] = (advanceCount[id] or 0) + 1
+			advanceCount[key] = (advanceCount[key] or 0) + 1
 		end
 	end
-	
+
 	for _, m in ipairs(self.markers) do
 		if m.type == 'advancetextdeco' then
 			local repeats = m.repeats or 0
@@ -1390,8 +1398,8 @@ function st:updateAdvanceTextDecos()
 			for i = 0, repeats do
 				local t = m.time + (i * repeatDelay)
 				if t <= self.editorBeat then
-					helpers.targetDecosUsingSyntaxicID(function(id)
-						addTrigger(id, t)
+					helpers.targetDecosUsingSyntaxicID(function(rawId)
+						addTrigger(rawId, t)
 					end, m.id)
 				end
 			end
