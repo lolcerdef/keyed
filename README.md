@@ -14,6 +14,7 @@
 - Saving / done?
 - 3D Editing
 - Keybinds
+  - Copy/Paste
 - 3D decos
 - 3D camera
 - shader rendering

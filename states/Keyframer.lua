@@ -97,8 +97,10 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	
 	self.mouseStartX = nil
 	self.mouseStartY = nil
+	self.isPanning = false
 	self.editMode = "none"
 	self.lockedAxis = "none"
+	self.editInfo = {} -- startX/Y/Z/R/SX/SY/SZ, X/Y/Z/R/SX/SY/SZ
 	-- changes to move, size, or rotate
 	
 	self.rateMod = 1
@@ -121,7 +123,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 			print("saved")
 		end,
 		'save',
-		'save'
+		'ctrl', 'save'
 	)
 	self:addKeybind(function()
 			local newEvents = {}
@@ -202,43 +204,116 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		'delete'
 	)
 	self:addKeybind(function()
+			if self.selectedEvents.type ~= 'keyframe' then 
+				print("hide what?")
+				return
+			end
 			
+			self.cmd:startGroup()
+			local selected = self:getSelectedList()
+			local hide = true
+			if maininput:down("shift") then hide = false end
+			for i, v in ipairs(selected) do
+				self.cmd:executeNew(cmd.ModifyKeys, v, {hide = hide})
+			end
+			self.cmd:endGroup("Made "..#selected.." keyframes "..(hide and "hide" or "unhide"))
 		end,
 		'hide deco',
 		'h'
 	)
+	
+	local function setEditInfo()
+		local list = self:getSelectedList()
+		local endBeat = self.editorBeat
+		for _, ev in ipairs(list) do
+			local evEnd = ev.time + (ev.duration or 0)
+			if evEnd > endBeat then
+				endBeat = evEnd
+			end
+		end
+		self.editorBeat = endBeat
+		
+		self:updateDecos()
+		
+		local deco, eventRef
+		for _, ev in ipairs(list) do
+			local key = ev.type .. ":" .. ev.id
+			local d = self.decoObjects[key]
+			if d then
+				deco = d
+				eventRef = ev
+				break
+			end
+		end
+		
+		self.editInfo = {
+			multiEdit = (#list > 1),
+			startX = deco and deco.x or 300,
+			startY = deco and deco.y or 180,
+			startZ = nil,
+			startR = deco and deco.r or 0,
+			startSX = deco and deco.sx or 1,
+			startSY = deco and deco.sy or 1,
+			startSZ = nil,
+			decoRef = deco,
+			eventRef = eventRef,
+			shuvState = shuv.usePalette
+		}
+		shuv.usePalette = false
+	end
 	self:addKeybind(function()
-			
+			if self.isPlaying then return end
+			if self.selectedEvents.type ~= 'keyframe' then 
+				print("move what?")
+				return
+			end
+			setEditInfo()
+			self.editMode = "move"
 		end,
 		'move deco',
 		'g'
 	)
 	self:addKeybind(function()
-			
+			if maininput:down("ctrl") or self.isPlaying then return end
+			if self.selectedEvents.type ~= 'keyframe' then 
+				print("scale what?")
+				return
+			end
+			setEditInfo()
+			self.editMode = "scale"
 		end,
 		'scale deco',
-		'd'
+		's'
 	)
 	self:addKeybind(function()
-			
+			if maininput:down('ctrl') or self.isPlaying then return end
+			if self.selectedEvents.type ~= 'keyframe' then 
+				print("rotate what?")
+				return
+			end
+			setEditInfo()
+			self.editMode = "rotate"
 		end,
 		'rotate deco',
 		'r'
 	)
 	self:addKeybind(function()
-			
+			self.lockedAxis = ((self.editMode == "move" or self.editMode == "scale") and --need a check for 3d when we get there
+				self.lockedAxis ~= "x") and "x" or "none"
 		end,
 		'axis x',
 		'x'
 	)
 	self:addKeybind(function()
-			
+			self.lockedAxis = ((self.editMode == "move" or self.editMode == "scale") and 
+				self.lockedAxis ~= "y") and "y" or "none"
 		end,
 		'axis y',
 		'y'
 	)
 	self:addKeybind(function()
-			
+			self.lockedAxis = ((self.editMode == "move" or self.editMode == "scale") and 
+				self.lockedAxis ~= "z") and "z" or "none"
 		end,
 		'axis z',
 		'z'
@@ -248,12 +323,6 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		end,
 		'reset window positions',
 		'ctrl', 'r'
-	)
-	self:addKeybind(function()
-			self.pan = {0,0}
-		end,
-		'reset pan position',
-		'r'
 	)
 	self:addKeybind(function() -- this perhaps sucks, doesn't play when editorBeat is before the play event
 			self.isPlaying = not self.isPlaying
@@ -280,7 +349,13 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		'space'
 	)
 	self:addKeybind(function()
-			self.exitDialogue = true
+			if self.editMode == "none" then
+				self.exitDialogue = true
+			else
+				self.editMode = "none"
+				self.lockedAxis = "none"
+				shuv.usePalette = self.editInfo.shuvState
+			end
 		end,
 		'exit',
 		'back'
@@ -297,8 +372,28 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	end,
 	'redo','ctrl','y')
 	
+	self:addKeybind(function()
+		self:confirmEdit()
+	end,
+	'confirm edit','enter')
+	
 	self:rebuildDecoObjects()
 end)
+
+function st:confirmEdit() -- i honestly don't know if i actually want to do multiselect
+	self.editMode = "none"
+	self.lockedAxis = "none"
+	shuv.usePalette = self.editInfo.shuvState
+	local properties = {'x', 'y', 'z', 'r', 'sx', 'sy', 'sz'}
+	local changes = {}
+	for _, v in ipairs(properties) do
+		if self.editInfo[v] then
+			changes[v] = self.editInfo[v]
+		end
+	end
+	self.cmd:executeNew(cmd.ModifyKeys, self.editInfo.eventRef, changes)
+	--bbp.utils.printTable(self.editInfo.eventRef)
+end
 
 function st:resetLoads()
 	local loadTheseMarkers = {
@@ -834,22 +929,26 @@ st:setUpdate(function(self, dt)
 	end
 	
 	if not imgui.love.GetWantCaptureMouse() then
-		if maininput:pressed("mouse3") and self.editMode == "none" then
-			self.editMode = "panning"
+		if maininput:pressed("mouse3") and not self.isPanning then
+			self.isPanning = true
 			self.mouseStartX = mouse.rx + self.pan[1]
 			self.mouseStartY = mouse.ry + self.pan[2]
 		end
-		if maininput:down("mouse3") and self.editMode == "panning" then
+		if maininput:down("mouse3") and self.isPanning then
 			self.pan[1] = self.mouseStartX - mouse.rx
 			self.pan[2] = self.mouseStartY - mouse.ry
 		end
-		if maininput:released("mouse3") and self.editMode == "panning" then
-			self.editMode = "none"
+		if maininput:released("mouse3") and self.isPanning then
+			self.isPanning = false
 			self.mouseStartX = nil
 			self.mouseStartY = nil
 		end
 	end
 	
+	-- mouse1 exists for some reason in controltable
+	if self.editMode ~= "none" and maininput:pressed('mouse1') then
+		self:confirmEdit()
+	end
 	self:checkKeybinds()
 	
 end)
@@ -864,7 +963,7 @@ function st:imgui()
 	
 	helpers.SetNextWindowPos(950, 50, window_flag)
 	helpers.SetNextWindowSize(250, 450, window_flag)
-	imgui.Begin("Event Editor##keyframer",nil,inputFlag)
+	imgui.Begin("Event Editor##keyframer",nil,inputFlag) -- todo: make thses use cmd.ModifyKeys
 		local selectedCount = self:getSelectedCount()
 		if selectedCount > 1 then
 			
@@ -906,6 +1005,13 @@ function st:imgui()
 		else
 			imgui.Text("Select an event to edit it")
 		end
+		
+	imgui.End()
+	
+	helpers.SetNextWindowPos(70, 500, window_flag)
+	helpers.SetNextWindowSize(200, 220, window_flag)
+	imgui.Begin("Event Palette ##keyframer",nil,inputFlag)
+		
 		
 	imgui.End()
 	
@@ -1020,7 +1126,7 @@ function st:imgui()
 		
 		love.graphics.setCanvas(self.aboveImguiCanv)	
 		love.graphics.clear(1,1,1,0)
-		if not imgui.IsWindowCollapsed() then
+		if not imgui.IsWindowCollapsed() and self.editMode == "none" then
 			love.graphics.setFont(fonts.main)
 			
 			local width = math.max(0, avail.x)
@@ -1124,7 +1230,7 @@ function st:imgui()
 		imgui.SetCursorScreenPos({cursor.x, cursor.y})
 		imgui.InvisibleButton("##timeline_input", {avail.x, avail.y})
 		
-		if imgui.IsItemActive() then
+		if imgui.IsItemActive() then --todo make this use cmd.ModifyKeys
 			local mousePos = imgui.GetMousePos()
 			local mx, my = mousePos.x, mousePos.y
 			
@@ -1217,6 +1323,10 @@ function st:imgui()
 	helpers.SetNextWindowSize(200, 220, window_flag)
 	imgui.Begin("Settings ##keyframer",nil,inputFlag)
 		shuv.usePalette = helpers.InputBool("Use Palette", shuv.usePalette or false)
+		
+		imgui.Text("Pan:")
+		self.pan[1] = helpers.InputFloat("X:", self.pan[1] or 0)
+		self.pan[2] = helpers.InputFloat("Y:", self.pan[2] or 0)
 		
 		local beatSnapText = 'None'
 
@@ -1445,11 +1555,11 @@ function st:updateDecos()
 			if isText then
 				self.decoObjects[k] = em.init('TextDeco', {})
 				self.decoObjects[k].kind = "textdeco"
-				self.vfx.textdeco[k] = self.decoObjects[k]
+				self.vfx.textdeco[k:sub(10)] = self.decoObjects[k]
 			else
 				self.decoObjects[k] = em.init('Deco', {})
 				self.decoObjects[k].kind = "deco"
-				self.vfx.deco[k] = self.decoObjects[k]
+				self.vfx.deco[k:sub(6)] = self.decoObjects[k]
 			end
 			
 			isFirstOfID = true
@@ -1572,7 +1682,7 @@ st:setFgDraw(function(self)
 		end
 	end
 	
-	if self.drawDecos then
+	if self.drawDecos and self.editMode == "none" then
 		love.graphics.setColor(1, 1, 1, 1)
 		self:updateDecos()
 		for _, v in pairs(self.renderDecos) do
@@ -1601,13 +1711,52 @@ st:setFgDraw(function(self)
 				v.x, v.y = v.originalX, v.originalY
 			end
 		end
+	elseif self.editMode == "move" then
+		local deco = self.editInfo.decoRef
+			deco.originalX, deco.originalY = deco.x, deco.y
+			deco.x, deco.y = deco.originalX - self.pan[1], deco.originalY - self.pan[2]
+		local gridScale = self.gridScale
+		if maininput:down('shift') then
+			gridScale = gridScale / 2
+		end
+		
+		love.graphics.setColor(1, 1, 1, 0.5)
+		deco:drawSprite()
+		love.graphics.setColor(1, 1, 1, 1)
+		local x, y = mouse.rx + self.pan[1], mouse.ry + self.pan[2]
+		if not maininput:down('ctrl') then
+			x = math.floor(x / gridScale + 0.5) *gridScale
+			y = math.floor(y / gridScale + 0.5) *gridScale
+		end
+		deco.x = x
+		deco.y = y
+		deco:drawSprite()
+		self.editInfo.x = x - self.pan[1]
+		self.editInfo.y = y - self.pan[2]
+		
+			deco.x, deco.y = deco.originalX, deco.originalY
+	elseif self.editMode == "scale" then
+		
+	elseif self.editMode == "rotate" then
+		
 	end
 	
 	love.graphics.setColor(1, 0, 0)
 	love.graphics.setLineWidth(2)
 	love.graphics.rectangle("line", -self.pan[1] - 1, -self.pan[2] - 1, sw + 2, sh + 2)
 	
-	self:imgui()
+	if self.editMode == 'move' then
+		local x1, y1 = self.editInfo.startX - (self.lockedAxis == "x" and 600 or 0), self.editInfo.startY - (self.lockedAxis == "y" and 600 or 0)
+		local x2, y2 = self.editInfo.startX + (self.lockedAxis == "x" and 600 or 0), self.editInfo.startY + (self.lockedAxis == "y" and 600 or 0)
+		love.graphics.line(x1-self.pan[1],y1-self.pan[2],x2-self.pan[1],y2-self.pan[2])
+	elseif self.editMode == 'scale' then
+		
+		
+	end
+	
+	if self.editMode == "none" then
+		self:imgui()
+	end
 end)
 
 return st
