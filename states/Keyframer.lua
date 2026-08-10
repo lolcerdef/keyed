@@ -67,6 +67,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	self.markers = {}
 	self.draggingMarker = nil
 	
+	-- i should really do it so that it shows the events sprite instead
 	self.markerColors = {
 		bookmark = convertCol(0xFFFFD86B),
 		comment = convertCol(0xFF555555),
@@ -88,7 +89,59 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		setBoolean = convertCol(0xFFFF7675),
 		setColor = convertCol(0xFFD980FA),
 		initObject = convertCol(0xFFFFFFFF),
-		paddles = convertCol(0xFFB8CDFF)
+		paddles = convertCol(0xFFB8CDFF),
+		stamp = convertCol(0xFFEE5A6F),
+		aft = convertCol(0xFF6AB04C),
+		setJoystickColor = convertCol(0xFFFFC048),
+		noise = convertCol(0xFF636E72),
+		hom = convertCol(0xFFB2BEC3),
+		songNameOverride = convertCol(0xFFFAB1A0),
+	}
+	
+	self.eventPalette = {
+		VFX = {
+			Deco = {
+				'deco',
+				'textdeco',
+				'advancetextdeco',
+				--[[
+				'deco3d',
+				'camera3d',]]
+				'loadCustomFont',
+				'newCanvas',
+				'editCanvas',
+				'decoShader',
+				'shader_uniform',
+				'stamp',
+				'aft',
+			},
+			Color = {
+				'setBgColor',
+				'setColor',
+				'setJoystickColor',
+				'outline',
+			},
+			Other = {
+				'noise',
+				'hom',
+				'ease',
+				'setBoolean',
+				'songNameOverride',
+				'playSound', -- i don't think they know where to put this, and i don't either
+			}
+		},
+		Editor = {
+			'bookmark',
+			'comment',
+			'tag',
+		},
+		Gameplay = {
+			'showResults',
+			--'play',
+			'setBPM',
+			'retime',
+			'paddles',
+		}
 	}
 	
 	if self.level then
@@ -98,6 +151,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	self.mouseStartX = nil
 	self.mouseStartY = nil
 	self.isPanning = false
+	self.placeEvent = ''
 	self.editMode = "none"
 	self.lockedAxis = "none"
 	self.editInfo = {} -- startX/Y/Z/R/SX/SY/SZ, X/Y/Z/R/SX/SY/SZ
@@ -224,7 +278,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	
 	local function setEditInfo()
 		local list = self:getSelectedList()
-		local endBeat = self.editorBeat
+		local endBeat = -math.huge
 		for _, ev in ipairs(list) do
 			local evEnd = ev.time + (ev.duration or 0)
 			if evEnd > endBeat then
@@ -286,7 +340,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		's'
 	)
 	self:addKeybind(function()
-			if maininput:down('ctrl') or self.isPlaying then return end
+			if maininput:down('ctrl') or maininput:down('shift') or self.isPlaying then return end
 			if self.selectedEvents.type ~= 'keyframe' then 
 				print("rotate what?")
 				return
@@ -323,6 +377,12 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		end,
 		'reset window positions',
 		'ctrl', 'r'
+	)
+	self:addKeybind(function()
+			self.pan = {0,0}
+		end,
+		'reset pan position',
+		'shift', 'r'
 	)
 	self:addKeybind(function() -- this perhaps sucks, doesn't play when editorBeat is before the play event
 			self.isPlaying = not self.isPlaying
@@ -371,6 +431,18 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		self:resetLoads()
 	end,
 	'redo','ctrl','y')
+	self:addKeybind(function() 
+		self.rateMod = math.max(self.rateMod - 0.1, 0.25) 
+		if self.source and self.isPlaying then
+			self.source:setPitch(self.rateMod)
+		end
+	end, 'speedmod DOWN', 'shift', 'leftbracket')
+	self:addKeybind(function() 
+		self.rateMod = math.min(self.rateMod + 0.1, 2)
+		if self.source and self.isPlaying then
+			self.source:setPitch(self.rateMod)
+		end
+	end, 'speedmod UP', 'shift', 'rightbracket' )
 	
 	self:addKeybind(function()
 		self:confirmEdit()
@@ -381,6 +453,8 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 end)
 
 function st:confirmEdit() -- i honestly don't know if i actually want to do multiselect
+	if self.editMode == "none" then return end
+	
 	self.editMode = "none"
 	self.lockedAxis = "none"
 	shuv.usePalette = self.editInfo.shuvState
@@ -427,7 +501,7 @@ function st:resetLoads()
 			if v.type == 'play' then
 				self.timingInfo.initial = {bpm = v.bpm, timeOffsetSeconds = v.offset, beatOffset = v.time}
 			elseif v.type == 'setBPM' then
-				table.insert(self.timingInfo.timingPoints,{beat = event.time, bpm = event.bpm})
+				table.insert(self.timingInfo.timingPoints,{beat = v.time, bpm = v.bpm or 100})
 			end
 		elseif v.type == "deco" or v.type == "textdeco" then
 			if Event.onLoad[v.type](v) then
@@ -748,6 +822,18 @@ function st:updatePlayer()
 	end
 	
 	local function resolveEaseTarget(var)
+		if var == 'p.x' then
+			if type(self.p) == 'table' and type(self.p._actualX) == 'number' then
+				return self.p, '_actualX'
+			end
+			return nil, nil
+		elseif var == 'p.y' then
+			if type(self.p) == 'table' and type(self.p._actualY) == 'number' then
+				return self.p, '_actualY'
+			end
+			return nil, nil
+		end
+		
 		local varSplit = {}
 		for v in string.gmatch(var, "([^.]+)") do
 			if tonumber(v) then
@@ -945,7 +1031,14 @@ st:setUpdate(function(self, dt)
 		end
 	end
 	
-	-- mouse1 exists for some reason in controltable
+	if self.placeEvent ~= '' and Event.info[self.placeEvent] then
+		local ev = { type = self.placeEvent, time = self.editorBeat, angle = 0 }
+		self.cmd:executeNew(cmd.CreateEvent, ev)
+		self:resetLoads()
+		self:selectSingle((self.markerColors[ev.type] ~= nil and 'marker' or 'keyframe'), ev)
+		self.placeEvent = ''
+	end
+	
 	if self.editMode ~= "none" and maininput:pressed('mouse1') then
 		self:confirmEdit()
 	end
@@ -973,7 +1066,12 @@ function st:imgui()
 			
 			imgui.Separator()
 			if not (selectedEvent.type == 'play') then
-				local oldId = selectedEvent.id
+				local reloadOnChange = {
+					'id',
+					'text', -- for some reason it doesn't change the actual deco
+					'order', -- i think thats it?
+				}
+				local old = helpers.copy(selectedEvent)
 				
 				local beatStep = 0.01
 				if self.beatSnap ~= 0 then
@@ -987,13 +1085,15 @@ function st:imgui()
 				if (not Event.info[selectedEvent.type].hideOrder) then
 					Event.property(selectedEvent, 'int', 'order', 'Order to run on, lower = first', { optional = true, default = 0 })
 				end
-				if Event.editorProperties[selectedEvent.type] then --need to make it check for id.
+				if Event.editorProperties[selectedEvent.type] then
 					Event.editorProperties[selectedEvent.type](selectedEvent)
 				end
 				imgui.Separator()
 				
-				if oldId ~= selectedEvent.id and selectedEvent.id ~= '' then
-					self:resetLoads()
+				for _, v in ipairs(reloadOnChange) do
+					if old[v] ~= selectedEvent[v] and not (v == 'id' and selectedEvent[v] == '') then
+						self:resetLoads()
+					end
 				end
 				
 				if imgui.Button('Delete event') then
@@ -1008,16 +1108,22 @@ function st:imgui()
 		
 	imgui.End()
 	
-	helpers.SetNextWindowPos(70, 500, window_flag)
-	helpers.SetNextWindowSize(200, 220, window_flag)
+	helpers.SetNextWindowPos(0, 50, window_flag)
+	helpers.SetNextWindowSize(250, 450, window_flag)
 	imgui.Begin("Event Palette ##keyframer",nil,inputFlag)
+		imgui.Text("Search:")
+		imgui.SameLine()
+		self.paletteSearch = helpers.InputText("##paletteSearch", self.paletteSearch or '', 9999)
 		
-		
+		local size =  imgui.GetContentRegionAvail()
+		if imgui.BeginListBox("##palette", size) then
+			self.placeEvent = helpers.BuildTree(self.eventPalette, self.placeEvent or '', self.paletteSearch)
+		end
 	imgui.End()
 	
 	helpers.SetNextWindowPos(470, 500, window_flag)
 	helpers.SetNextWindowSize(730, 220, window_flag)
-	imgui.Begin("Timeline ##keyframer",nil,inputFlag)
+	if imgui.Begin("Timeline ##keyframer",nil,inputFlag) then
 		--local drawlist = imgui.GetWindowDrawList()
 		
 		local function snapBeat(b)
@@ -1187,6 +1293,7 @@ function st:imgui()
 					triangle(x - 6, bottomY, x + 6, bottomY, x, bottomY - 8, c)
 					
 					local t = m.name or m.var or m.type
+					if t == '' then t = m.type end
 					text(x, bottomY - 7, c, t, -90)
 					if m.duration then
 						line(x, bottomY, beatToX(m.time + (m.duration or 0)), bottomY, c, 2)
@@ -1224,7 +1331,6 @@ function st:imgui()
 			
 			love.graphics.setScissor()
 		end
-		love.graphics.setCanvas()
 		
 		-- fuckass controls
 		imgui.SetCursorScreenPos({cursor.x, cursor.y})
@@ -1316,17 +1422,24 @@ function st:imgui()
 				end
 			end
 		end
-		
+	else
+		love.graphics.setCanvas(self.aboveImguiCanv)	
+		love.graphics.clear(1,1,1,0)
+	end
+	love.graphics.setCanvas()
 	imgui.End()
 	
-	helpers.SetNextWindowPos(270, 500, window_flag)
-	helpers.SetNextWindowSize(200, 220, window_flag)
+	helpers.SetNextWindowPos(0, 500, window_flag)
+	helpers.SetNextWindowSize(250, 220, window_flag)
 	imgui.Begin("Settings ##keyframer",nil,inputFlag)
 		shuv.usePalette = helpers.InputBool("Use Palette", shuv.usePalette or false)
 		
-		imgui.Text("Pan:")
-		self.pan[1] = helpers.InputFloat("X:", self.pan[1] or 0)
-		self.pan[2] = helpers.InputFloat("Y:", self.pan[2] or 0)
+		self.rateMod = helpers.SliderFloat('Playback speed (0.25x-2x)',
+			self.rateMod, 0.25, 2)
+		self.rateMod = math.floor(self.rateMod * 20 + 0.5) / 20
+		if imgui.IsItemActive() and self.isPlaying and self.source then
+			self.source:setPitch(cs.rateMod)
+		end
 		
 		local beatSnapText = 'None'
 
@@ -1581,10 +1694,6 @@ function st:updateDecos()
 				 'recolor', 'outline', 'effectCanvas', 'effectCanvasRaw','effectCanvasType', 'hide', 'parentid', 'rotationMode',
 				 'onlyScaleDistance','mirror','tiling', 'colordither','exclusiveMirror','shader', 'alphadither', 'ditherpercent'}
 		
-		-- Snapshot the deco's pristine starting values ONCE, when it's created.
-		-- These never get overwritten by interpolation, so every frame accumulates
-		-- from the same known origin instead of from whatever value is currently
-		-- sitting on the object (which may already be mid-tween).
 		if isFirstOfID then
 			deco._baseProps = {}
 			for _, p in ipairs(props) do
@@ -1642,6 +1751,9 @@ function st:updateDecos()
 			end
 		end
 		
+		-- for some reason the default cat doesn't show until you put a sprite that doesn't exist
+		-- i should look deeper into it
+		
 		deco:updateLayer() -- just in case
 		
 		self.renderDecos[k] = deco
@@ -1682,64 +1794,70 @@ st:setFgDraw(function(self)
 		end
 	end
 	
-	if self.drawDecos and self.editMode == "none" then
-		love.graphics.setColor(1, 1, 1, 1)
-		self:updateDecos()
-		for _, v in pairs(self.renderDecos) do
-			if not v.parentid or v.parentid == '' then
-				v.originalX, v.originalY = v.x, v.y
-				v.x, v.y = v.originalX - self.pan[1], v.originalY - self.pan[2]
+	local success, err = pcall(function()
+		if self.drawDecos and self.editMode == "none" then
+			love.graphics.setColor(1, 1, 1, 1)
+			self:updateDecos()
+			for _, v in pairs(self.renderDecos) do
+				if not v.parentid or v.parentid == '' then
+					v.originalX, v.originalY = v.x, v.y
+					v.x, v.y = v.originalX - self.pan[1], v.originalY - self.pan[2]
+				end
 			end
-		end
-		
-		em.draw()
-		
-		love.graphics.setShader()
-		for k,v in pairs(self.vfx.deco) do
-			if v.drawLayer == 'ontop' then
-				v:draw(true)
+			
+			em.draw()
+			
+			love.graphics.setShader()
+			for k,v in pairs(self.vfx.deco) do
+				if v.drawLayer == 'ontop' then
+					v:draw(true)
+				end
 			end
-		end
-		for k,v in pairs(self.vfx.textdeco) do
-			if v.drawLayer == 'ontop' then
-				v:draw(true)
+			for k,v in pairs(self.vfx.textdeco) do
+				if v.drawLayer == 'ontop' then
+					v:draw(true)
+				end
 			end
-		end
-		
-		for _, v in pairs(self.renderDecos) do
-			if not v.parentid or v.parentid == '' then
-				v.x, v.y = v.originalX, v.originalY
+			
+			for _, v in pairs(self.renderDecos) do
+				if not v.parentid or v.parentid == '' then
+					v.x, v.y = v.originalX, v.originalY
+				end
 			end
+		elseif self.editMode == "move" then
+			local deco = self.editInfo.decoRef
+				deco.originalX, deco.originalY = deco.x, deco.y
+				deco.x, deco.y = deco.originalX - self.pan[1], deco.originalY - self.pan[2]
+			local gridScale = self.gridScale
+			if maininput:down('shift') then
+				gridScale = gridScale / 2
+			end
+			
+			love.graphics.setColor(1, 1, 1, 0.5)
+			deco:drawSprite()
+			love.graphics.setColor(1, 1, 1, 1)
+			
+			local wx, wy = mouse.rx + self.pan[1], mouse.ry + self.pan[2]
+			if not maininput:down('ctrl') then
+				wx = math.floor(wx / gridScale + 0.5) * gridScale
+				wy = math.floor(wy / gridScale + 0.5) * gridScale
+			end
+			
+			deco.x = wx - self.pan[1]
+			deco.y = wy - self.pan[2]
+			deco:drawSprite()
+			self.editInfo.x = wx
+			self.editInfo.y = wy
+			
+				deco.x, deco.y = deco.originalX, deco.originalY
+		elseif self.editMode == "scale" then
+			
+		elseif self.editMode == "rotate" then
+			
 		end
-	elseif self.editMode == "move" then
-		local deco = self.editInfo.decoRef
-			deco.originalX, deco.originalY = deco.x, deco.y
-			deco.x, deco.y = deco.originalX - self.pan[1], deco.originalY - self.pan[2]
-		local gridScale = self.gridScale
-		if maininput:down('shift') then
-			gridScale = gridScale / 2
-		end
-		
-		love.graphics.setColor(1, 1, 1, 0.5)
-		deco:drawSprite()
-		love.graphics.setColor(1, 1, 1, 1)
-		local x, y = mouse.rx + self.pan[1], mouse.ry + self.pan[2]
-		if not maininput:down('ctrl') then
-			x = math.floor(x / gridScale + 0.5) *gridScale
-			y = math.floor(y / gridScale + 0.5) *gridScale
-		end
-		deco.x = x
-		deco.y = y
-		deco:drawSprite()
-		self.editInfo.x = x - self.pan[1]
-		self.editInfo.y = y - self.pan[2]
-		
-			deco.x, deco.y = deco.originalX, deco.originalY
-	elseif self.editMode == "scale" then
-		
-	elseif self.editMode == "rotate" then
-		
-	end
+	end)
+	if not success then print("failed drawing deco") end
+	if err then print(err) end
 	
 	love.graphics.setColor(1, 0, 0)
 	love.graphics.setLineWidth(2)
