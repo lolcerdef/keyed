@@ -822,18 +822,6 @@ function st:updatePlayer()
 	end
 	
 	local function resolveEaseTarget(var)
-		if var == 'p.x' then
-			if type(self.p) == 'table' and type(self.p._actualX) == 'number' then
-				return self.p, '_actualX'
-			end
-			return nil, nil
-		elseif var == 'p.y' then
-			if type(self.p) == 'table' and type(self.p._actualY) == 'number' then
-				return self.p, '_actualY'
-			end
-			return nil, nil
-		end
-		
 		local varSplit = {}
 		for v in string.gmatch(var, "([^.]+)") do
 			if tonumber(v) then
@@ -917,6 +905,8 @@ function st:updatePlayer()
 		
 		target[field] = helpers.interpolate(startVal, endVal, t, ease)
 	end
+	
+	self.p._actualX, self.p._actualY = self.p.x, self.p.y
 end
 
 function st:updateColorPalette()
@@ -984,13 +974,15 @@ function st:rebuildDecoObjects()
 end
 
 st:setUpdate(function(self, dt)
-	self.p.x = self.p._actualX - self.pan[1]
-	self.p.y = self.p._actualY - self.pan[2]
-	
 	self:updateColorPalette()
 	self:setBGColor()
 	self:setOutline()
+	
+	self.p.x = 300
+	self.p.y = 180
 	self:updatePlayer()
+	self.p.x = self.p._actualX - self.pan[1]
+	self.p.y = self.p._actualY - self.pan[2]
 	
 	if self.editorBeat < (self.lastEditorBeat or self.editorBeat) - 0.0001 then
 		self:rebuildDecoObjects()
