@@ -735,7 +735,7 @@ function st:setBGColor()
 end
 
 function st:updatePlayer()
-	if not (self.p and self.p.paddles) then
+	if not self.p then
 		return
 	end
 	local numPaddles = #self.p.paddles
@@ -1866,6 +1866,10 @@ st:setFgDraw(function(self)
 	
 	if self.editMode == "none" then
 		self:imgui()
+	else
+		love.graphics.setCanvas(self.aboveImguiCanv)	
+		love.graphics.clear(1,1,1,0)
+		love.graphics.setCanvas()
 	end
 end)
 
