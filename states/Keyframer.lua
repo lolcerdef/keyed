@@ -98,6 +98,13 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		songNameOverride = convertCol(0xFFFAB1A0),
 	}
 	
+	self.decoTypes = {
+		deco = true,
+		textdeco = true,
+		camera3d = true,
+		deco3d = true,
+	}
+	
 	self.eventPalette = {
 		VFX = {
 			Deco = {
@@ -302,6 +309,8 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		
 		self.editInfo = {
 			multiEdit = (#list > 1),
+			startMouseX = mouse.rx + self.pan[1],
+			startMouseY = mouse.ry + self.pan[2],
 			startX = deco and deco.x or 300,
 			startY = deco and deco.y or 180,
 			startZ = nil,
@@ -352,21 +361,21 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		'r'
 	)
 	self:addKeybind(function()
-			self.lockedAxis = ((self.editMode == "move" or self.editMode == "scale") and --need a check for 3d when we get there
+			self.lockedAxis = (self.editMode ~= 'none' and --need a check for 3d when we get there
 				self.lockedAxis ~= "x") and "x" or "none"
 		end,
 		'axis x',
 		'x'
 	)
 	self:addKeybind(function()
-			self.lockedAxis = ((self.editMode == "move" or self.editMode == "scale") and 
+			self.lockedAxis = (self.editMode ~= 'none' and 
 				self.lockedAxis ~= "y") and "y" or "none"
 		end,
 		'axis y',
 		'y'
 	)
 	self:addKeybind(function()
-			self.lockedAxis = ((self.editMode == "move" or self.editMode == "scale") and 
+			self.lockedAxis = (self.editMode ~= 'none' and 
 				self.lockedAxis ~= "z") and "z" or "none"
 		end,
 		'axis z',
@@ -423,12 +432,14 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	self:addKeybind(function() 
 		self.cmd:undo()
 		self:resetLoads()
+		self:rebuildDecoObjects()
 	end,
 	'undo','ctrl','z')
 
 	self:addKeybind(function()
 		self.cmd:redo()
 		self:resetLoads()
+		self:rebuildDecoObjects()
 	end,
 	'redo','ctrl','y')
 	self:addKeybind(function() 
@@ -1025,6 +1036,15 @@ st:setUpdate(function(self, dt)
 	
 	if self.placeEvent ~= '' and Event.info[self.placeEvent] then
 		local ev = { type = self.placeEvent, time = self.editorBeat, angle = 0 }
+		if self.decoTypes[self.placeEvent] then
+			local id = 'deco'
+			local n = 0
+			while self.decos[self.placeEvent .. ':' .. id] do
+				n = n + 1
+				id = 'deco' .. n
+			end
+			ev.id = id
+		end
 		self.cmd:executeNew(cmd.CreateEvent, ev)
 		self:resetLoads()
 		self:selectSingle((self.markerColors[ev.type] ~= nil and 'marker' or 'keyframe'), ev)
@@ -1843,9 +1863,108 @@ st:setFgDraw(function(self)
 			
 				deco.x, deco.y = deco.originalX, deco.originalY
 		elseif self.editMode == "scale" then
+			local deco = self.editInfo.decoRef
+			deco.originalX, deco.originalY = deco.x, deco.y
+			deco.x, deco.y = deco.originalX - self.pan[1], deco.originalY - self.pan[2]
 			
+			love.graphics.setColor(1, 1, 1, 0.5)
+			deco:drawSprite()
+			love.graphics.setColor(1, 1, 1, 1)
+			
+			local rot = math.rad(self.editInfo.startR or deco.r or 0)
+			local cosr, sinr = math.cos(rot), math.sin(rot)
+			
+			local function toLocal(dx, dy)
+				return dx * cosr + dy * sinr, -dx * sinr + dy * cosr
+			end
+			
+			local wx, wy = mouse.rx + self.pan[1], mouse.ry + self.pan[2]
+			
+			local startLX, startLY = toLocal(self.editInfo.startMouseX - self.editInfo.startX, self.editInfo.startMouseY - self.editInfo.startY)
+			local curLX, curLY = toLocal(wx - self.editInfo.startX, wy - self.editInfo.startY)
+			
+			local sfx = (math.abs(startLX) > 0.0001) and (curLX / startLX) or 1
+			local sfy = (math.abs(startLY) > 0.0001) and (curLY / startLY) or 1
+			
+			if self.lockedAxis == "x" then
+				deco.sx = self.editInfo.startSX * sfx
+				deco.sy = self.editInfo.startSY
+			elseif self.lockedAxis == "y" then
+				deco.sx = self.editInfo.startSX
+				deco.sy = self.editInfo.startSY * sfy
+			else
+				if maininput:down('shift') then
+					local sf = math.abs(curLX) > math.abs(curLY) and sfx or sfy
+					deco.sx = self.editInfo.startSX * sf
+					deco.sy = self.editInfo.startSY * sf
+				else
+					deco.sx = self.editInfo.startSX * sfx
+					deco.sy = self.editInfo.startSY * sfy
+				end
+			end
+			
+			if not maininput:down('ctrl') then
+				local snap = 0.1
+				deco.sx = math.floor(deco.sx / snap + 0.5) * snap
+				deco.sy = math.floor(deco.sy / snap + 0.5) * snap
+			end
+			
+			deco:drawSprite()
+			
+			self.editInfo.sx = deco.sx
+			self.editInfo.sy = deco.sy
+			
+			local sw, sh = deco.spr:getDimensions()
+			
+			love.graphics.push()
+			love.graphics.translate(self.editInfo.startX - self.pan[1],self.editInfo.startY - self.pan[2])
+			love.graphics.rotate(rot)
+			
+			love.graphics.setColor(1, 0, 0, 1)
+			love.graphics.setLineWidth(1 / math.max(math.min(self.editInfo.startSX, self.editInfo.startSY), 0.0001))
+			love.graphics.push()
+			love.graphics.scale(self.editInfo.startSX, self.editInfo.startSY)
+			love.graphics.rectangle("line", -deco.ox, -deco.oy, sw, sh)
+			love.graphics.pop()
+			
+			love.graphics.pop()
+			love.graphics.setColor(1, 1, 1, 1)
+			love.graphics.setLineWidth(1)
+			
+			deco.x, deco.y = deco.originalX, deco.originalY
 		elseif self.editMode == "rotate" then
+			local deco = self.editInfo.decoRef
+			deco.originalX, deco.originalY = deco.x, deco.y
+			deco.x, deco.y = deco.originalX - self.pan[1], deco.originalY - self.pan[2]
 			
+			deco.r = self.editInfo.startR
+			love.graphics.setColor(1, 1, 1, 0.5)
+			deco:drawSprite()
+			love.graphics.setColor(1, 1, 1, 1)
+			
+			local wx, wy = mouse.rx + self.pan[1], mouse.ry + self.pan[2]
+			local curAngle = math.deg(math.atan2(wy - self.editInfo.startY, wx - self.editInfo.startX))
+			local newR = curAngle + self.editInfo.angleOffset
+			
+			if not maininput:down('ctrl') then
+				local snap = maininput:down('shift') and 5 or 15
+				newR = math.floor(newR / snap + 0.5) * snap
+			end
+			
+			deco.r = newR
+			deco:drawSprite()
+			
+			self.editInfo.r = deco.r
+			
+			love.graphics.setColor(1, 0, 0, 1)
+			love.graphics.line(
+				self.editInfo.startX - self.pan[1],
+				self.editInfo.startY - self.pan[2],
+				wx - self.pan[1], wy - self.pan[2]
+			)
+			love.graphics.setColor(1, 1, 1, 1)
+			
+			deco.x, deco.y = deco.originalX, deco.originalY
 		end
 	end)
 	if not success then print("failed drawing deco") end
@@ -1860,8 +1979,25 @@ st:setFgDraw(function(self)
 		local x2, y2 = self.editInfo.startX + (self.lockedAxis == "x" and 600 or 0), self.editInfo.startY + (self.lockedAxis == "y" and 600 or 0)
 		love.graphics.line(x1-self.pan[1],y1-self.pan[2],x2-self.pan[1],y2-self.pan[2])
 	elseif self.editMode == 'scale' then
+		local rot = math.rad(self.editInfo.startR or 0)
+		local xdirX, xdirY = math.cos(rot) * 600, math.sin(rot) * 600
+		local ydirX, ydirY = -math.sin(rot) * 600, math.cos(rot) * 600
 		
+		local dx, dy = 0, 0
+		if self.lockedAxis == "x" then
+			dx, dy = xdirX, xdirY
+		elseif self.lockedAxis == "y" then
+			dx, dy = ydirX, ydirY
+		end
 		
+		if self.lockedAxis == "x" or self.lockedAxis == "y" then
+			local x1, y1 = self.editInfo.startX - dx, self.editInfo.startY - dy
+			local x2, y2 = self.editInfo.startX + dx, self.editInfo.startY + dy
+			
+			love.graphics.setColor(1, 0, 0, 1)
+			love.graphics.line(x1 - self.pan[1], y1 - self.pan[2], x2 - self.pan[1], y2 - self.pan[2])
+			love.graphics.setColor(1, 1, 1, 1)
+		end
 	end
 	
 	if self.editMode == "none" then
