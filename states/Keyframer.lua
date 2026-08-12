@@ -43,7 +43,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	self.editorBeat = beat or 0
 	self.lastEditorBeat = self.editorBeat
 	self.beatSize = 40
-	self.timelineScroll = 0
+	self.timelineScroll = self.editorBeat - 50/self.beatSize
 	self.timelineRowScroll = 0
 	
 	self.level = level or nil
