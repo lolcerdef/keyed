@@ -61,6 +61,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	-- textdeco:otherid = {id = 'otherid', kind = "textdeco", order = 3, events = {{time = 0, angle = 0, etc.}, etc.}}
 	self.decos = {}
 	self.selectedEvents = { type = nil, events = {} }
+	self.copiedEvents = { type = nil, events = {} }
 	
 	self.decoObjects = {}
 	
@@ -190,7 +191,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 			local newEvents = {}
 			if self.selectedEvents.type == 'keyframe' then
 				local touchedKeys = {}
-				for i, v in ipairs(self:getSelectedList()) do
+				for i, v in ipairs(self:getEList(self.selectedEvents)) do
 					table.insert(newEvents, {type = v.type, time = self.editorBeat, angle = v.angle, id = v.id})
 					touchedKeys[v.type .. ":" .. v.id] = true
 				end
@@ -221,7 +222,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 				self.selectedEvents = newSelection
 			elseif self.selectedEvents.type == 'marker' then
 				local touchedTypes = {}
-				for i, v in ipairs(self:getSelectedList()) do
+				for i, v in ipairs(self:getEList(self.selectedEvents)) do
 					if v.type ~= 'play' and v.type ~= 'showResults' then
 						local copy = helpers.copy(v)
 						copy.time = self.editorBeat
@@ -231,9 +232,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 				end
 				
 				if #newEvents > 1 then
-					self.cmd:startGroup()
 					self.cmd:executeNew(cmd.CreateMultiple,newEvents)
-					self.cmd:endGroup("Made "..#newEvents.." keyframes")
 				elseif #newEvents == 1 then
 					self.cmd:executeNew(cmd.CreateEvent, newEvents[1])
 				else
@@ -271,7 +270,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 			end
 			
 			self.cmd:startGroup()
-			local selected = self:getSelectedList()
+			local selected = self:getEList(self.selectedEvents)
 			local hide = true
 			if maininput:down("shift") then hide = false end
 			for i, v in ipairs(selected) do
@@ -284,7 +283,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	)
 	
 	local function setEditInfo()
-		local list = self:getSelectedList()
+		local list = self:getEList(self.selectedEvents)
 		local endBeat = -math.huge
 		for _, ev in ipairs(list) do
 			local evEnd = ev.time + (ev.duration or 0)
@@ -442,6 +441,76 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		self:rebuildDecoObjects()
 	end,
 	'redo','ctrl','y')
+	
+	self:addKeybind(function()
+		self.copiedEvents = helpers.copy(self.selectedEvents)
+	end,'copy selected','ctrl','c')
+	self:addKeybind(function()
+		local events = self:getEList(self.copiedEvents)
+		if #events == 0 then
+			print('paste what events?')
+			return
+		end
+		
+		local smallestTime = math.huge
+		for i, ev in ipairs(events) do
+			if ev.time < smallestTime then
+				smallestTime = ev.time
+			end
+		end
+		local beatDiff = self.editorBeat - smallestTime
+		for i, ev in ipairs(events) do
+			ev.time = ev.time + beatDiff
+		end
+		
+		if #events > 1 then
+			self.cmd:startGroup()
+			self.cmd:executeNew(cmd.CreateMultiple, events)
+			self.cmd:endGroup("Pasted "..#events.." events")
+		else
+			self.cmd:executeNew(cmd.CreateEvent, events[1])
+		end
+		self:resetLoads()
+		
+		local pasteType = self.copiedEvents.type
+		local newSelection = { type = pasteType, events = {} }
+		if pasteType == 'keyframe' then
+			local wanted = {}
+			for _, ev in ipairs(events) do
+				local key = ev.type .. ":" .. ev.id
+				wanted[key] = wanted[key] or {}
+				wanted[key][ev.time] = (wanted[key][ev.time] or 0) + 1
+			end
+			for key, byTime in pairs(wanted) do
+				local deco = self.decos[key]
+				if deco then
+					for _, dEv in ipairs(deco.events) do
+						local count = byTime[dEv.time]
+						if count and count > 0 then
+							newSelection.events[dEv] = true
+							byTime[dEv.time] = count - 1
+						end
+					end
+				end
+			end
+		elseif pasteType == 'marker' then
+			local wanted = {}
+			for _, ev in ipairs(events) do
+				wanted[ev.type] = wanted[ev.type] or {}
+				wanted[ev.type][ev.time] = (wanted[ev.type][ev.time] or 0) + 1
+			end
+			for _, m in ipairs(self.markers) do
+				local byTime = wanted[m.type]
+				local count = byTime and byTime[m.time]
+				if count and count > 0 then
+					newSelection.events[m] = true
+					byTime[m.time] = count - 1
+				end
+			end
+		end
+		self.selectedEvents = newSelection
+	end,'paste selected','ctrl','v')
+	
 	self:addKeybind(function() 
 		self.rateMod = math.max(self.rateMod - 0.1, 0.25) 
 		if self.source and self.isPlaying then
@@ -614,7 +683,7 @@ function st:getAngleSnapValue()
 end
 
 function st:deleteSelectedEvents()
-	local list = self:getSelectedList()
+	local list = self:getEList(self.selectedEvents)
 	if #list > 0 then
 		if #list > 1 then
 			self.cmd:startGroup()
@@ -638,25 +707,32 @@ function st:selectSingle(kind, obj)
 end
 --todo:
 function st:addSelect(kind, obj)
-	
+	if self.selectedEvents.kind == nil then
+		self.selectedEvents.kind = kind
+	end
+	if kind ~= self.selectedEvents.kind then
+		print('mismatch selection kinds')
+		return
+	end
+	self.selectedEvents.events[obj] = true
 end
 function st:isSelected(kind, obj)
 	return self.selectedEvents.type == kind and self.selectedEvents.events[obj] == true
 end
-function st:getFirstSelected()
-	local obj = next(self.selectedEvents.events)
-	return obj, self.selectedEvents.type
+function st:getFirstOfEList(list)
+	local obj = next(list.events)
+	return obj, list.type
 end
-function st:getSelectedList()
-	local list = {}
-	for obj in pairs(self.selectedEvents.events) do
-		list[#list + 1] = obj
+function st:getEList(list)
+	local out = {}
+	for obj in pairs(list.events) do
+		out[#out + 1] = obj
 	end
-	return list
+	return out
 end
-function st:getSelectedCount()
+function st:getEListCount(list)
 	local count = 0
-	for _ in pairs(self.selectedEvents.events) do
+	for _ in pairs(list.events) do
 		count = count + 1
 	end
 	return count
@@ -1054,7 +1130,10 @@ st:setUpdate(function(self, dt)
 	if self.editMode ~= "none" and maininput:pressed('mouse1') then
 		self:confirmEdit()
 	end
-	self:checkKeybinds()
+	
+	if not imgui.love.GetWantTextInput() then
+		self:checkKeybinds()
+	end
 	
 end)
 
@@ -1069,11 +1148,11 @@ function st:imgui()
 	helpers.SetNextWindowPos(950, 50, window_flag)
 	helpers.SetNextWindowSize(250, 450, window_flag)
 	imgui.Begin("Event Editor##keyframer",nil,inputFlag) -- todo: make thses use cmd.ModifyKeys
-		local selectedCount = self:getSelectedCount()
+		local selectedCount = self:getEListCount(self.selectedEvents)
 		if selectedCount > 1 then
 			
 		elseif selectedCount == 1 then
-			local selectedEvent = self:getFirstSelected()
+			local selectedEvent = self:getFirstOfEList(self.selectedEvents)
 			imgui.Text("Editing " .. Event.info[selectedEvent.type].name)
 			
 			imgui.Separator()
@@ -1345,6 +1424,7 @@ function st:imgui()
 		end
 		
 		-- fuckass controls
+		local io = imgui.GetIO()
 		imgui.SetCursorScreenPos({cursor.x, cursor.y})
 		imgui.InvisibleButton("##timeline_input", {avail.x, avail.y})
 		
@@ -1353,6 +1433,10 @@ function st:imgui()
 			local mx, my = mousePos.x, mousePos.y
 			
 			local markerZoneTop = bottomY - 16
+			local selectFunc = self.selectSingle
+			if io.KeyShift then
+				selectFunc = self.addSelect
+			end
 			
 			if (my >= markerZoneTop or self.draggingMarker) and mx >= trackX - diamondSize then
 				if imgui.IsMouseClicked(0) then
@@ -1366,7 +1450,7 @@ function st:imgui()
 					end
 					self.draggingMarker = closestMarker
 					if closestMarker then
-						self:selectSingle("marker", closestMarker)
+						selectFunc(self, "marker", closestMarker)
 					else
 						self:clearSelection()
 					end
@@ -1393,7 +1477,7 @@ function st:imgui()
 						end
 					end
 					if closest then
-						self:selectSingle("keyframe", closest)
+						selectFunc(self, "keyframe", closest)
 					else
 						self:clearSelection()
 					end
@@ -1422,7 +1506,6 @@ function st:imgui()
 		end
 		
 		if imgui.IsWindowHovered() then
-			local io = imgui.GetIO()
 			local wheel = io.MouseWheel or 0
 			if wheel ~= 0 then
 				if io.KeyCtrl then
@@ -1736,10 +1819,11 @@ function st:updateDecos()
 			
 			local e = propEvents[#propEvents]
 			local target = ((e.mode == "add" and type(e[p]) == "number") and not instantProps[p]) and (base + e[p]) or e[p]
+			local isFirstEvent = (e == v.events[1])
 			
 			local ease = e.ease or "linear"
 			local duration = e.duration or 0
-			local t = (duration > 0 and not instantProps[p])
+			local t = (duration > 0 and not instantProps[p] and not isFirstEvent)
 				and helpers.clamp((self.editorBeat - e.time) / duration, 0, 1)
 				or 1
 			
@@ -1936,34 +2020,38 @@ st:setFgDraw(function(self)
 			local deco = self.editInfo.decoRef
 			deco.originalX, deco.originalY = deco.x, deco.y
 			deco.x, deco.y = deco.originalX - self.pan[1], deco.originalY - self.pan[2]
+			local pivotX, pivotY = self.editInfo.startX - self.pan[1], self.editInfo.startY - self.pan[2]
+			local lineLen = 100
+			local startRot = math.rad(self.editInfo.startR or 0)
+			local origR = deco.r
+			deco.r = self.editInfo.startR or 0
 			
-			deco.r = self.editInfo.startR
 			love.graphics.setColor(1, 1, 1, 0.5)
 			deco:drawSprite()
-			love.graphics.setColor(1, 1, 1, 1)
 			
-			local wx, wy = mouse.rx + self.pan[1], mouse.ry + self.pan[2]
-			local curAngle = math.deg(math.atan2(wy - self.editInfo.startY, wx - self.editInfo.startX))
-			local newR = curAngle + self.editInfo.angleOffset
+			love.graphics.setColor(1, 0, 0, 1)
+			love.graphics.line(pivotX, pivotY, pivotX + math.cos(startRot) * lineLen, pivotY + math.sin(startRot) * lineLen)
 			
-			if not maininput:down('ctrl') then
-				local snap = maininput:down('shift') and 5 or 15
-				newR = math.floor(newR / snap + 0.5) * snap
+			local dx, dy = mouse.rx - pivotX, mouse.ry - pivotY
+			local mouseAngle = math.atan2(dy, dx)
+			
+			if maininput:down('shift') then
+				local snap = math.rad(15)
+				mouseAngle = math.floor(mouseAngle / snap + 0.5) * snap
 			end
 			
-			deco.r = newR
+			deco.r = math.deg(mouseAngle)
+			
+			love.graphics.setColor(1, 1, 1, 1)
 			deco:drawSprite()
+			
+			love.graphics.setColor(1, 0, 0, 1)
+			love.graphics.line(pivotX, pivotY, mouse.rx, mouse.ry)
+			love.graphics.setColor(1, 1, 1, 1)
 			
 			self.editInfo.r = deco.r
 			
-			love.graphics.setColor(1, 0, 0, 1)
-			love.graphics.line(
-				self.editInfo.startX - self.pan[1],
-				self.editInfo.startY - self.pan[2],
-				wx - self.pan[1], wy - self.pan[2]
-			)
-			love.graphics.setColor(1, 1, 1, 1)
-			
+			deco.r = origR
 			deco.x, deco.y = deco.originalX, deco.originalY
 		end
 	end)
