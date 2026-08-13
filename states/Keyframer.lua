@@ -9,6 +9,37 @@ local function convertCol(c)
 	return {r / 255, g / 255, b / 255, a / 255}
 end
 
+-- constant things that used to be made every frame/multiple times
+
+-- clors :3
+local BGC = convertCol(0xFF222222)
+local labelBGC = convertCol(0xFF1A1A1A)
+local rowAltC = convertCol(0xFF272727)
+local lineC = convertCol(0xFF3C3C3C)
+local lineHiC = convertCol(0xFF5A5A5A)
+local textC = convertCol(0xFFB0B0B0)
+local playC = convertCol(0xFF3AA0FF)
+local keyC = convertCol(0xFFE0C040)
+local keySelC = convertCol(0xFFFF6060)
+
+local function eventSort(a, b)
+	if a.time == b.time then
+		return (a.order or 0) < (b.order or 0)
+	end
+	return a.time < b.time
+end
+
+local loadTheseMarkers = {
+	loadCustomFont = true,
+	newCanvas = true,
+	--decoShader = true,
+	tags = true, 
+} -- probably more i'm forgetting rn
+-- tags inset events into self.playEvents, perhaps this could be used?
+-- like maybe self.playEvents get rebuilt when a tag is added/removed/modified
+-- and everything else looks in this?
+-- tags are probably the only thing that does this no?
+
 st:setInit(function(self, level, variant, beat, preloadSoundData)
 	em.clear()
 	
@@ -65,8 +96,14 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	
 	self.decoObjects = {}
 	
+	self.timelineRows = {}
+	self.rowsDirty = true
+	
+	self.easeVarSplitCache = {}
+	
 	self.markers = {}
 	self.draggingMarker = nil
+	self.markersByType = {}
 	
 	-- i should really do it so that it shows the events sprite instead
 	self.markerColors = {
@@ -191,9 +228,14 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 			local newEvents = {}
 			if self.selectedEvents.type == 'keyframe' then
 				local touchedKeys = {}
+				local touchedDecos = {}
 				for i, v in ipairs(self:getEList(self.selectedEvents)) do
 					table.insert(newEvents, {type = v.type, time = self.editorBeat, angle = v.angle, id = v.id})
-					touchedKeys[v.type .. ":" .. v.id] = true
+					local key = v.type .. ":" .. v.id
+					if not touchedKeys[key] then
+						touchedKeys[key] = true
+						table.insert(touchedDecos, {type = v.type, id = v.id})
+					end
 				end
 				
 				if #newEvents > 1 then
@@ -206,7 +248,9 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 					print("make what keyframe?")
 				end
 				
-				self:resetLoads()
+				for _, d in ipairs(touchedDecos) do
+					self:resetDecoEvents(d.type, d.id)
+				end
 				
 				local newSelection = { type = 'keyframe', events = {} }
 				for key in pairs(touchedKeys) do
@@ -239,7 +283,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 					print("make what events?")
 				end
 				
-				self:resetLoads()
+				self:resetMarkers()
 				
 				local newSelection = { type = 'marker', events = {} }
 				for _, m in ipairs(self.markers) do
@@ -470,30 +514,35 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		else
 			self.cmd:executeNew(cmd.CreateEvent, events[1])
 		end
-		self:resetLoads()
 		
 		local pasteType = self.copiedEvents.type
 		local newSelection = { type = pasteType, events = {} }
 		if pasteType == 'keyframe' then
 			local wanted = {}
 			for _, ev in ipairs(events) do
-				local key = ev.type .. ":" .. ev.id
-				wanted[key] = wanted[key] or {}
-				wanted[key][ev.time] = (wanted[key][ev.time] or 0) + 1
+				wanted[ev.type] = wanted[ev.type] or {}
+				wanted[ev.type][ev.id] = wanted[ev.type][ev.id] or {}
+				wanted[ev.type][ev.id][ev.time] = (wanted[ev.type][ev.id][ev.time] or 0) + 1
 			end
-			for key, byTime in pairs(wanted) do
-				local deco = self.decos[key]
-				if deco then
-					for _, dEv in ipairs(deco.events) do
-						local count = byTime[dEv.time]
-						if count and count > 0 then
-							newSelection.events[dEv] = true
-							byTime[dEv.time] = count - 1
+			for eType, byId in pairs(wanted) do
+				for eId, byTime in pairs(byId) do
+					self:resetDecoEvents(eType, eId)
+					
+					local deco = self.decos[eType .. ":" .. eId]
+					if deco then
+						for _, dEv in ipairs(deco.events) do
+							local count = byTime[dEv.time]
+							if count and count > 0 then
+								newSelection.events[dEv] = true
+								byTime[dEv.time] = count - 1
+							end
 						end
 					end
 				end
 			end
 		elseif pasteType == 'marker' then
+			self:resetMarkers()
+			
 			local wanted = {}
 			for _, ev in ipairs(events) do
 				wanted[ev.type] = wanted[ev.type] or {}
@@ -549,29 +598,15 @@ function st:confirmEdit() -- i honestly don't know if i actually want to do mult
 	--bbp.utils.printTable(self.editInfo.eventRef)
 end
 
-function st:resetLoads()
-	local loadTheseMarkers = {
-		loadCustomFont = true,
-		newCanvas = true,
-		--decoShader = true,
-		tags = true, 
-	} -- probably more i'm forgetting rn
-	-- tags inset events into self.playEvents, perhaps this could be used?
-	-- like maybe self.playEvents get rebuilt when a tag is added/removed/modified
-	-- and everything else looks in this?
-	-- tags are probably the only thing that does this no?
-	
+function st:resetMarkers()
 	self.gm:resetLevel()
 	self.markers = {}
-	self.decos = {}
+	self.markersByType = {}
+	self.timingInfo.timingPoints = {}
 	
-	local decoCount = 0
-	for i, v in ipairs(self.level.events) do
-		decoCount = decoCount + 1
-		
-		--local t = v.type:lower()
+	for _, v in ipairs(self.level.events) do
 		if self.markerColors[v.type] then
-			table.insert(self.markers, self.level.events[i])
+			table.insert(self.markers, v)
 			
 			if loadTheseMarkers[v.type] then
 				if Event.onLoad[v.type](v) then
@@ -581,9 +616,29 @@ function st:resetLoads()
 			if v.type == 'play' then
 				self.timingInfo.initial = {bpm = v.bpm, timeOffsetSeconds = v.offset, beatOffset = v.time}
 			elseif v.type == 'setBPM' then
-				table.insert(self.timingInfo.timingPoints,{beat = v.time, bpm = v.bpm or 100})
+				table.insert(self.timingInfo.timingPoints, {beat = v.time, bpm = v.bpm or 100})
 			end
-		elseif v.type == "deco" or v.type == "textdeco" then
+		end
+	end
+	
+	table.sort(self.markers, eventSort)
+	table.sort(self.timingInfo.timingPoints, function(a, b) return a.beat < b.beat end)
+	for _, m in ipairs(self.markers) do
+		if not self.markersByType[m.type] then
+			self.markersByType[m.type] = {}
+		end
+		table.insert(self.markersByType[m.type], m)
+	end
+end
+
+function st:resetDecos()
+	self.decos = {}
+	
+	local index = 0
+	for _, v in ipairs(self.level.events) do
+		index = index + 1
+		
+		if v.type == "deco" or v.type == "textdeco" then
 			if Event.onLoad[v.type](v) then
 				self.drawDecos = false
 			end
@@ -593,31 +648,62 @@ function st:resetLoads()
 			
 			local key = v.type .. ":" .. v.id
 			if not self.decos[key] then
-				self.decos[key] = {}
-				self.decos[key].order = decoCount
-				self.decos[key].events = {}
-				self.decos[key].kind = v.type
-				self.decos[key].id = v.id
+				self.decos[key] = { order = index, events = {}, kind = v.type, id = v.id }
 			end
-			table.insert(self.decos[key].events, self.level.events[i])
-			table.sort(self.decos[key].events, function(a, b)
-				if a.time == b.time then
-					return (a.order or 0) < (b.order or 0)
-				end
-				return a.time < b.time
-			end)
+			table.insert(self.decos[key].events, v)
+			table.sort(self.decos[key].events, eventSort)
 		end
 	end
-	table.sort(self.markers, function(a, b)
-		if a.time == b.time then
-			return (a.order or 0) < (b.order or 0)
-		end
-		return a.time < b.time
-	end)
 	
-	table.sort(self.timingInfo.timingPoints, function(a, b)
-		return a.beat < b.beat
-	end)
+	self.rowsDirty = true
+end
+
+function st:resetDecoEvents(decoType, decoId)
+	local key = decoType .. ":" .. decoId
+	local events = {}
+	local firstIndex = nil
+	
+	for i, v in ipairs(self.level.events) do
+		if v.type == decoType and v.id == decoId then
+			if Event.onLoad[v.type](v) then
+				self.drawDecos = false
+			end
+			if v.type == "textdeco" then
+				v.text = v.textString
+			end
+			
+			table.insert(events, v)
+			firstIndex = firstIndex or i
+		end
+	end
+	
+	if #events == 0 then
+		self.decos[key] = nil
+		self.rowsDirty = true
+		return
+	end
+	
+	table.sort(events, eventSort)
+	
+	self.decos[key] = self.decos[key] or { order = firstIndex, kind = decoType, id = decoId }
+	self.decos[key].events = events
+	
+	self.rowsDirty = true
+end
+
+function st:resetLoads()
+	self:resetMarkers()
+	self:resetDecos()
+end
+
+function st:rebuildTimelineRows()
+	local rows = {}
+	for id, deco in pairs(self.decos) do
+		rows[#rows + 1] = { key = id, id = deco.id, kind = deco.kind, order = deco.order or 0, events = deco.events or {} }
+	end
+	table.sort(rows, function(a, b) return a.order < b.order end)
+	self.timelineRows = rows
+	self.rowsDirty = false
 end
 
 function st:addKeybind(func, name, k1, k2, k3)
@@ -705,7 +791,7 @@ end
 function st:selectSingle(kind, obj)
 	self.selectedEvents = { type = kind, events = { [obj] = true } }
 end
---todo:
+--todo: fix selection rendering bug
 function st:addSelect(kind, obj)
 	if self.selectedEvents.kind == nil then
 		self.selectedEvents.kind = kind
@@ -757,13 +843,8 @@ end
 
 function st:getRetimeOffset(beat)
 	local offset = 0
-	local retimes = {}
-	for _, m in ipairs(self.markers) do
-		if m.type == 'retime' then
-			table.insert(retimes, m)
-		end
-	end
-	table.sort(retimes, function(a, b) return a.time < b.time end)
+	local retimes = self.markersByType.retime
+	if not retimes then return offset end
 	for _, m in ipairs(retimes) do
 		if beat > m.time then
 			offset = offset + m.offset
@@ -775,14 +856,21 @@ end
 function st:getBPMAtBeat(beat)
 	local bpm = self.baseBpm or 100
 	local bestTime = -math.huge
-	for _, m in ipairs(self.markers) do
-		if (m.type == 'play' or m.type == 'setBPM') and m.bpm and m.time <= beat then
-			if m.time > bestTime then
-				bestTime = m.time
-				bpm = m.bpm
+	
+	local function scan(list)
+		if not list then return end
+		for _, m in ipairs(list) do
+			if m.bpm and m.time <= beat then
+				if m.time > bestTime then
+					bestTime = m.time
+					bpm = m.bpm
+				end
 			end
 		end
 	end
+	scan(self.markersByType.play)
+	scan(self.markersByType.setBPM)
+	
 	if self.rateMod then
 		bpm = bpm * self.rateMod
 	end
@@ -791,8 +879,10 @@ end
 
 function st:setOutline()
 	local bestTime = -math.huge
-	for _, m in ipairs(self.markers) do
-		if m.type == 'outline' and m.time <= self.editorBeat then
+	local outlines = self.markersByType.outline
+	if not outlines then return end
+	for _, m in ipairs(outlines) do
+		if m.time <= self.editorBeat then
 			if m.time > bestTime then
 				if m.enable == false then
 					self.outline = nil
@@ -808,12 +898,15 @@ function st:setBGColor()
 	local color = 0
 	local vcolor = nil
 	local bestTime = -math.huge
-	for _, m in ipairs(self.markers) do
-		if m.type == 'setBgColor' and m.time <= self.editorBeat then
-			if m.time > bestTime then
-				bestTime = m.time
-				color = m.color
-				vcolor = m.voidColor
+	local bgColors = self.markersByType.setBgColor
+	if bgColors then
+		for _, m in ipairs(bgColors) do
+			if m.time <= self.editorBeat then
+				if m.time > bestTime then
+					bestTime = m.time
+					color = m.color
+					vcolor = m.voidColor
+				end
 			end
 		end
 	end
@@ -829,12 +922,20 @@ function st:updatePlayer()
 	
 	local paddleEvents = {}
 	local easeEvents = {}
-	for _, m in ipairs(self.markers) do
-		if m.type == 'paddles' and m.time <= self.editorBeat then
-			table.insert(paddleEvents, m)
+	local paddleMarkers = self.markersByType.paddles
+	if paddleMarkers then
+		for _, m in ipairs(paddleMarkers) do
+			if m.time <= self.editorBeat then
+				table.insert(paddleEvents, m)
+			end
 		end
-		if m.type == 'ease' and m.time <= self.editorBeat and m.var:sub(1,2) == 'p.' then
-			table.insert(easeEvents, m)
+	end
+	local easeMarkers = self.markersByType.ease
+	if easeMarkers then
+		for _, m in ipairs(easeMarkers) do
+			if m.time <= self.editorBeat and m.var:sub(1,2) == 'p.' then
+				table.insert(easeEvents, m)
+			end
 		end
 	end
 	
@@ -909,16 +1010,29 @@ function st:updatePlayer()
 	end
 	
 	local function resolveEaseTarget(var)
-		local varSplit = {}
-		for v in string.gmatch(var, "([^.]+)") do
-			if tonumber(v) then
-				return nil, nil
+		local varSplit = self.easeVarSplitCache[var]
+		if varSplit == nil then
+			local parts = {}
+			local valid = true
+			for v in string.gmatch(var, "([^.]+)") do
+				if tonumber(v) then
+					valid = false
+					break
+				end
+				table.insert(parts, v)
 			end
-			table.insert(varSplit, v)
+			if not valid or #parts < 2 then
+				varSplit = false
+			else
+				varSplit = parts
+			end
+			self.easeVarSplitCache[var] = varSplit
 		end
-		if #varSplit < 2 then
+		
+		if not varSplit then
 			return nil, nil
 		end
+		
 		local target = self
 		for i = 1, #varSplit - 1 do
 			local key = varSplit[i]
@@ -1000,8 +1114,8 @@ function st:updateColorPalette()
 	shuv.resetPal()
 	
 	local byIndex = {}
-	for _, m in ipairs(self.markers) do
-		if m.type == 'setColor' then
+	if self.markersByType.setColor then
+		for _, m in ipairs(self.markersByType.setColor) do
 			local idx = m.color or 0
 			byIndex[idx] = byIndex[idx] or {}
 			table.insert(byIndex[idx], m)
@@ -1011,8 +1125,6 @@ function st:updateColorPalette()
 	for idx = 0, 7 do
 		local events = byIndex[idx]
 		if events then
-			table.sort(events, function(a, b) return a.time < b.time end)
-			
 			for _, channel in ipairs({'r', 'g', 'b'}) do
 				local propEvents = {}
 				for _, e in ipairs(events) do
@@ -1122,8 +1234,15 @@ st:setUpdate(function(self, dt)
 			ev.id = id
 		end
 		self.cmd:executeNew(cmd.CreateEvent, ev)
-		self:resetLoads()
-		self:selectSingle((self.markerColors[ev.type] ~= nil and 'marker' or 'keyframe'), ev)
+		
+		local isMarker = self.markerColors[ev.type] ~= nil
+		if isMarker then
+			self:resetMarkers()
+		else
+			self:resetDecoEvents(ev.type, ev.id)
+		end
+		
+		self:selectSingle(isMarker and 'marker' or 'keyframe', ev)
 		self.placeEvent = ''
 	end
 	
@@ -1268,17 +1387,6 @@ function st:imgui()
 		local visible_rows = math.floor((avail.y - rulerH) / rowH)
 		local diamondSize = 6
 		
-		-- clors :3
-		local BGC = convertCol(0xFF222222)
-		local labelBGC = convertCol(0xFF1A1A1A)
-		local rowAltC = convertCol(0xFF272727)
-		local lineC = convertCol(0xFF3C3C3C)
-		local lineHiC = convertCol(0xFF5A5A5A)
-		local textC = convertCol(0xFFB0B0B0)
-		local playC = convertCol(0xFF3AA0FF)
-		local keyC = convertCol(0xFFE0C040)
-		local keySelC = convertCol(0xFFFF6060)
-		
 		local beatSize = self.beatSize
 		local function beatToX(b)
 			return trackX + (b - scroll) * beatSize
@@ -1310,11 +1418,13 @@ function st:imgui()
 		playhead
 		]]
 		
-		local rows = {}
-		for id, deco in pairs(self.decos) do
-			rows[#rows + 1] = { key = key, id = deco.id, kind = deco.kind, order = deco.order or 0, events = deco.events or {} }
+		-- rows only need to be rebuilt when self.decos actually changes
+		-- (see resetDecos/resetDecoEvents setting self.rowsDirty), not on
+		-- every single frame this window is drawn.
+		if self.rowsDirty then
+			self:rebuildTimelineRows()
 		end
-		table.sort(rows, function(a, b) return a.order < b.order end)
+		local rows = self.timelineRows
 		
 		local total_rows_h = math.max(avail.y - rulerH, #rows * rowH)
 		
@@ -1606,7 +1716,6 @@ function st:imgui()
 	end
 end
 
-
 local instantPropsDeco = {
 	drawOrder = true,
 	recolor = true,
@@ -1708,8 +1817,9 @@ function st:updateAdvanceTextDecos()
 		end
 	end
 
-	for _, m in ipairs(self.markers) do
-		if m.type == 'advancetextdeco' then
+	local advanceMarkers = self.markersByType.advancetextdeco
+	if advanceMarkers then
+		for _, m in ipairs(advanceMarkers) do
 			local repeats = m.repeats or 0
 			local repeatDelay = m.repeatDelay or 1
 			
@@ -1741,16 +1851,7 @@ end
 
 function st:updateDecos()
 	self.renderDecos = self.renderDecos or {}
-	for k, v in pairs(self.decos) do
-		if #v.events > 1 then
-			table.sort(v.events, function(a, b)
-				if a.time ~= b.time then
-					return a.time < b.time
-				end
-				return (a.order or 0) < (b.order or 0)
-			end)
-		end
-		
+	for k, v in pairs(self.decos) do -- will probably need to sort when tags are not ignored
 		if #v.events == 0 or self.editorBeat < v.events[1].time then
 			self.renderDecos[k] = nil
 			goto continue
