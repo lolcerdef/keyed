@@ -46,6 +46,8 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	love.keyboard.setTextInput(true)
 	self.gm = em.init("GameManager") -- <- does something, not much though
 	self.cmd = em.init("CommandHandler")
+	
+	self.canv = love.graphics.newCanvas(project.res.x,project.res.y)
 	self.p._actualX = self.p.x
 	self.p._actualY = self.p.y
 	
@@ -1960,36 +1962,40 @@ function st:updateDecos()
 	self:updateAdvanceTextDecos()
 end
 
-st:setFgDraw(function(self)
-	local palette = shuv.usePalette and shuv.pal or shuv.paldefault
-	
-	local bgc = palette[self.bgColor] or {r=255,g=255,b=255}
-	local vc = palette[self.voidColor] or {r=255,g=255,b=255}
-	love.graphics.clear(vc.r/255, vc.g/255, vc.b/255)
-	
-	local sw, sh = 600, 360
-	
-	love.graphics.setColor(bgc.r/255, bgc.g/255, bgc.b/255)
-	love.graphics.rectangle('fill',-self.pan[1],-self.pan[2],sw,sh)
-	
-	love.graphics.setLineWidth(1)
-	
-	if self.gridScale and self.gridScale > 0 then
-		local s = self.gridScale
+st:setFgDraw(function(self) -- this is a mess
+	if self.editMode ~= "none" then
+		local palette = shuv.usePalette and shuv.pal or shuv.paldefault
 		
-		love.graphics.setColor(math.abs(bgc.r/255 - 0.15),math.abs(bgc.g/255 - 0.15),math.abs(bgc.b/255 - 0.15), 1)
+		local bgc = palette[cs.bgColor] or {r=255,g=255,b=255}
+		local vc = palette[cs.voidColor] or {r=255,g=255,b=255}
+		love.graphics.clear(vc.r/255, vc.g/255, vc.b/255)
 		
-		local offsetX = -self.pan[1] % s
-		local offsetY = -self.pan[2] % s
+		love.graphics.setColor(bgc.r/255, bgc.g/255, bgc.b/255)
+		love.graphics.rectangle('fill',-cs.pan[1],-cs.pan[2],project.res.x,project.res.y)
 		
-		for x = offsetX, sw, s do
-			love.graphics.line(x, 0, x, sh)
-		end
-		
-		for y = offsetY, sh, s do
-			love.graphics.line(0, y, sw, y)
+		if cs.gridScale and cs.gridScale > 0 then
+			love.graphics.setLineWidth(1)
+			local s = cs.gridScale
+			
+			love.graphics.setColor(math.abs(bgc.r/255 - 0.15),math.abs(bgc.g/255 - 0.15),math.abs(bgc.b/255 - 0.15), 1)
+			
+			local offsetX = -cs.pan[1] % s
+			local offsetY = -cs.pan[2] % s
+			
+			for x = offsetX, 600, s do
+				love.graphics.line(x, 0, x, 360)
+			end
+			
+			for y = offsetY, 360, s do
+				love.graphics.line(0, y, 600, y)
+			end
 		end
 	end
+	
+	local oldCanv = love.graphics.getCanvas()
+	love.graphics.setCanvas(self.canv)
+	love.graphics.clear()
+	love.graphics.setCanvas(oldCanv)
 	
 	local success, err = pcall(function()
 		if self.drawDecos and self.editMode == "none" then
@@ -2002,8 +2008,19 @@ st:setFgDraw(function(self)
 				end
 			end
 			
-			em.draw()
-			
+			self.gm:draw()
+				
+			love.graphics.setCanvas(shuv.canvas)
+			love.graphics.setColor(1, 1, 1, 1)
+
+			self.gm:startOnTopShader()
+			self.gm:drawCanv()
+			self.gm:endOnTopShader()
+			if self.vfx.onTopUI then
+				self.vfx.onTopUI = true
+				--self.gm:drawHud()
+			end
+			--[[
 			love.graphics.setShader()
 			for k,v in pairs(self.vfx.deco) do
 				if v.drawLayer == 'ontop' then
@@ -2014,7 +2031,7 @@ st:setFgDraw(function(self)
 				if v.drawLayer == 'ontop' then
 					v:draw(true)
 				end
-			end
+			end]]
 			
 			for _, v in pairs(self.renderDecos) do
 				if not v.parentid or v.parentid == '' then
@@ -2161,7 +2178,7 @@ st:setFgDraw(function(self)
 	
 	love.graphics.setColor(1, 0, 0)
 	love.graphics.setLineWidth(2)
-	love.graphics.rectangle("line", -self.pan[1] - 1, -self.pan[2] - 1, sw + 2, sh + 2)
+	love.graphics.rectangle("line", -self.pan[1] - 1, -self.pan[2] - 1, 602, 362)
 	
 	if self.editMode == 'move' then
 		local x1, y1 = self.editInfo.startX - (self.lockedAxis == "x" and 600 or 0), self.editInfo.startY - (self.lockedAxis == "y" and 600 or 0)

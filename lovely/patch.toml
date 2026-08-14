@@ -73,3 +73,55 @@ if cs.aboveImguiCanv then
 end
 '''
 match_indent = true
+
+# ... 2
+[[patches]]
+[patches.pattern]
+target = "obj/GameManager.lua"
+pattern = '''love.graphics.rectangle('fill',0,0,project.res.x,project.res.y)'''
+position = "at"
+payload = '''
+if cs.name ~= 'Keyframer' then
+	love.graphics.rectangle('fill',0,0,project.res.x,project.res.y)
+else
+	local palette = shuv.usePalette and shuv.pal or shuv.paldefault
+	
+	local bgc = palette[cs.bgColor] or {r=255,g=255,b=255}
+	local vc = palette[cs.voidColor] or {r=255,g=255,b=255}
+	love.graphics.clear(vc.r/255, vc.g/255, vc.b/255)
+	
+	love.graphics.setColor(bgc.r/255, bgc.g/255, bgc.b/255)
+	love.graphics.rectangle('fill',-cs.pan[1],-cs.pan[2],project.res.x,project.res.y)
+	
+	if cs.gridScale and cs.gridScale > 0 then
+		love.graphics.setLineWidth(1)
+		local s = cs.gridScale
+		
+		love.graphics.setColor(math.abs(bgc.r/255 - 0.15),math.abs(bgc.g/255 - 0.15),math.abs(bgc.b/255 - 0.15), 1)
+		
+		local offsetX = -cs.pan[1] % s
+		local offsetY = -cs.pan[2] % s
+		
+		for x = offsetX, 600, s do
+			love.graphics.line(x, 0, x, 360)
+		end
+		
+		for y = offsetY, 360, s do
+			love.graphics.line(0, y, 600, y)
+		end
+	end
+end
+'''
+match_indent = true
+
+[[patches]]
+[patches.pattern]
+target = "obj/GameManager.lua"
+pattern = '''function GameManager:drawHud()'''
+position = "after"
+payload = '''
+if cs.name == 'Keyframer' then
+	return
+end
+'''
+match_indent = true
