@@ -583,6 +583,37 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	self:rebuildDecoObjects()
 end)
 
+function st:commitDragTimes()
+	if not self.dragStartTimes then return end
+	
+	local changed = {}
+	for ev, startTime in pairs(self.dragStartTimes) do
+		if ev.time ~= startTime then
+			changed[#changed + 1] = { ev = ev, newTime = ev.time }
+			ev.time = startTime
+		end
+	end
+	
+	if #changed > 0 then
+		if #changed > 1 then
+			self.cmd:startGroup()
+			for _, c in ipairs(changed) do
+				self.cmd:executeNew(cmd.ModifyKeys, c.ev, { time = c.newTime })
+			end
+			self.cmd:endGroup("Moved "..#changed.." events")
+		else
+			self.cmd:executeNew(cmd.ModifyKeys, changed[1].ev, { time = changed[1].newTime })
+		end
+		
+		for _, r in ipairs(self.timelineRows) do
+			table.sort(r.events, eventSort)
+		end
+		table.sort(self.markers, eventSort)
+	end
+	
+	self.dragStartTimes = nil
+end
+
 function st:confirmEdit() -- i honestly don't know if i actually want to do multiselect
 	if self.editMode == "none" then return end
 	
@@ -1540,13 +1571,13 @@ function st:imgui()
 		imgui.SetCursorScreenPos({cursor.x, cursor.y})
 		imgui.InvisibleButton("##timeline_input", {avail.x, avail.y})
 		
-		if imgui.IsItemActive() then --todo make this use cmd.ModifyKeys
+		if imgui.IsItemActive() then
 			local mousePos = imgui.GetMousePos()
 			local mx, my = mousePos.x, mousePos.y
 			
 			local markerZoneTop = bottomY - 16
 			local selectFunc = self.selectSingle
-			if io.KeyShift then
+			if io.KeyShift and self:getEListCount(self.selectedEvents) ~= 0 then
 				selectFunc = self.addSelect
 			end
 			
@@ -1562,14 +1593,28 @@ function st:imgui()
 					end
 					self.draggingMarker = closestMarker
 					if closestMarker then
-						selectFunc(self, "marker", closestMarker)
+						local alreadyMulti = self:isSelected("marker", closestMarker) and self:getEListCount(self.selectedEvents) > 1
+						if not alreadyMulti then
+							selectFunc(self, "marker", closestMarker)
+						end
+						
+						self.dragStartTimes = {}
+						self.dragAnchorStartTime = closestMarker.time
+						for _, ev in ipairs(self:getEList(self.selectedEvents)) do
+							self.dragStartTimes[ev] = ev.time
+						end
 					else
 						self:clearSelection()
+						self.dragStartTimes = nil
 					end
 				end
 				
-				if self.draggingMarker then
-					self.draggingMarker.time = clampedSnap(xToBeat(mx))
+				if self.draggingMarker and self.dragStartTimes then
+					local newTime = clampedSnap(xToBeat(mx))
+					local delta = newTime - self.dragAnchorStartTime
+					for ev, startTime in pairs(self.dragStartTimes) do
+						ev.time = math.max(-8, startTime + delta)
+					end
 				end
 			elseif my < tracky then
 				if mx >= trackX and not self.isPlaying then
@@ -1589,29 +1634,39 @@ function st:imgui()
 						end
 					end
 					if closest then
-						selectFunc(self, "keyframe", closest)
+						local alreadyMulti = self:isSelected("keyframe", closest) and self:getEListCount(self.selectedEvents) > 1
+						if not alreadyMulti then
+							selectFunc(self, "keyframe", closest)
+						end
+						
+						self.dragStartTimes = {}
+						self.dragAnchorStartTime = closest.time
+						for _, ev in ipairs(self:getEList(self.selectedEvents)) do
+							self.dragStartTimes[ev] = ev.time
+						end
 					else
 						self:clearSelection()
+						self.dragStartTimes = nil
 					end
 					self.draggingKey = closest
 					self.draggingKeyRow = closest and row or nil
 				end
-				if self.draggingKey and imgui.IsMouseDragging(0) then
+				if self.draggingKey and imgui.IsMouseDragging(0) and self.dragStartTimes then
 					local newTime = clampedSnap(xToBeat(mx))
-					self.draggingKey.time = newTime
-					if self.draggingKeyRow then
-						table.sort(self.draggingKeyRow.events, function(a, b)
-							if a.time == b.time then
-								return (a.order or 0) < (b.order or 0)
-							end
-							return a.time < b.time
-						end)
+					local delta = newTime - self.dragAnchorStartTime
+					for ev, startTime in pairs(self.dragStartTimes) do
+						ev.time = math.max(-8, startTime + delta)
+					end
+					
+					for _, r in ipairs(rows) do
+						table.sort(r.events, eventSort)
 					end
 				end
 			end
 		end
 		
 		if imgui.IsMouseReleased(0) then
+			self:commitDragTimes()
 			self.draggingKey = nil
 			self.draggingKeyRow = nil
 			self.draggingMarker = nil

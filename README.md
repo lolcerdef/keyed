@@ -6,22 +6,22 @@
       - Keyframes in that row / done
     - Markers (Like BPM changes, Bookmarks, Playsong, etc.) / done
       - Better Marker drawing? (maybe use the event's sprite instead of the playhead but upside down)
-  - Deco List Selector (Like the Blender Obj list)
-  - Event Palette 
+  - Deco List Selector (Like the Blender Obj list) / no
+  - Event Palette / done
   - Event Editor / done
-  - Playback Speed
-  - Undo/Redo
+  - Playback Speed / done
+  - Undo/Redo / donish (the keybinds are there)
 - Saving / done?
 - 3D Editing
 - Keybinds
-  - Copy/Paste
+  - Copy/Paste / done
 - 3D decos
 - 3D camera
 - shader rendering
 - Canvases (maybe make it so that you can look at different canvases?)
 - AFTs
 - Tags
-- Selecting decos
-- Selecting decos through viewport
-- Cranky (for stuff like `p.x`, `p.y`, `p.drawScale` and whatever)
+- Selecting decos / no
+- Selecting decos through viewport / no
+- Cranky (for stuff like `p.x`, `p.y`, `p.drawScale` and whatever) / no
 - Probably more I don't remember
