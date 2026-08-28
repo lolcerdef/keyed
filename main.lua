@@ -1,0 +1,1 @@
+pyp = require(string.gsub(mods.keyed.path, '/', '.') .. '.libs.pyp')

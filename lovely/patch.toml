@@ -61,19 +61,6 @@ end
 '''
 match_indent = true
 
-# ...
-[[patches]]
-[patches.pattern]
-target = "main.lua"
-pattern = '''love.graphics.draw(imgui.canvas, shuv.xoffset, shuv.yoffset, 0, shuv.scale / imgui.canvasScale)'''
-position = "after"
-payload = '''
-if cs.aboveImguiCanv then
-	love.graphics.draw(cs.aboveImguiCanv, shuv.xoffset, shuv.yoffset, 0, shuv.scale / imgui.canvasScale)
-end
-'''
-match_indent = true
-
 # ... 2
 [[patches]]
 [patches.pattern]

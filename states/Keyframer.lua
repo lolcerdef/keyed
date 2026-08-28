@@ -12,15 +12,15 @@ end
 -- constant things that used to be made every frame/multiple times
 
 -- clors :3
-local BGC = convertCol(0xFF222222)
-local labelBGC = convertCol(0xFF1A1A1A)
-local rowAltC = convertCol(0xFF272727)
-local lineC = convertCol(0xFF3C3C3C)
-local lineHiC = convertCol(0xFF5A5A5A)
-local textC = convertCol(0xFFB0B0B0)
-local playC = convertCol(0xFF3AA0FF)
-local keyC = convertCol(0xFFE0C040)
-local keySelC = convertCol(0xFFFF6060)
+local BGC = 0xFF222222
+local labelBGC = 0xFF1A1A1A
+local rowAltC = 0xFF272727
+local lineC = 0xFF3C3C3C
+local lineHiC = 0xFF5A5A5A
+local textC = 0xFFB0B0B0
+local playC = 0xFF3AA0FF
+local keyC = 0xFFE0C040
+local keySelC = 0xFFFF6060
 
 local function eventSort(a, b)
 	if a.time == b.time then
@@ -55,8 +55,6 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	mouse:disableGameplay()
 	love.mouse.setVisible(true)
 	mouse.hidden = true
-	
-	self.aboveImguiCanv = love.graphics.newCanvas(1200,720)
 	
 	self.soundData = preloadSoundData
 	self.timingInfo = {
@@ -109,33 +107,33 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	
 	-- i should really do it so that it shows the events sprite instead
 	self.markerColors = {
-		bookmark = convertCol(0xFFFFD86B),
-		comment = convertCol(0xFF555555),
-		tag = convertCol(0xFFF08E54),
-		play = convertCol(0xFF4261FF),
-		playSound = convertCol(0xFFFF4242),
-		setBPM = convertCol(0xFF9B59B6),
-		retime = convertCol(0xFF1ABC9C),
-		showResults = convertCol(0xFF2ECC71),
-		loadCustomFont = convertCol(0xFFE84393),
-		advancetextdeco = convertCol(0xFFA29BFE),
-		decoShader = convertCol(0xFF00CEC9),
-		shader_uniform = convertCol(0xFF6C5CE7),
-		newCanvas = convertCol(0xFFB8E986),
-		editCanvas = convertCol(0xFF8E9B0C),
-		ease = convertCol(0xFF74B9FF),
-		outline = convertCol(0xFF95A5A6),
-		setBgColor = convertCol(0xFFF1C40F),
-		setBoolean = convertCol(0xFFFF7675),
-		setColor = convertCol(0xFFD980FA),
-		initObject = convertCol(0xFFFFFFFF),
-		paddles = convertCol(0xFFB8CDFF),
-		stamp = convertCol(0xFFEE5A6F),
-		aft = convertCol(0xFF6AB04C),
-		setJoystickColor = convertCol(0xFFFFC048),
-		noise = convertCol(0xFF636E72),
-		hom = convertCol(0xFFB2BEC3),
-		songNameOverride = convertCol(0xFFFAB1A0),
+		bookmark = 0xFFFFD86B,
+		comment = 0xFF555555,
+		tag = 0xFFF08E54,
+		play = 0xFF4261FF,
+		playSound = 0xFFFF4242,
+		setBPM = 0xFF9B59B6,
+		retime = 0xFF1ABC9C,
+		showResults = 0xFF2ECC71,
+		loadCustomFont = 0xFFE84393,
+		advancetextdeco = 0xFFA29BFE,
+		decoShader = 0xFF00CEC9,
+		shader_uniform = 0xFF6C5CE7,
+		newCanvas = 0xFFB8E986,
+		editCanvas = 0xFF8E9B0C,
+		ease = 0xFF74B9FF,
+		outline = 0xFF95A5A6,
+		setBgColor = 0xFFF1C40F,
+		setBoolean = 0xFFFF7675,
+		setColor = 0xFFD980FA,
+		initObject = 0xFFFFFFFF,
+		paddles = 0xFFB8CDFF,
+		stamp = 0xFFEE5A6F,
+		aft = 0xFF6AB04C,
+		setJoystickColor = 0xFFFFC048,
+		noise = 0xFF636E72,
+		hom = 0xFFB2BEC3,
+		songNameOverride = 0xFFFAB1A0,
 	}
 	
 	self.decoTypes = {
@@ -145,6 +143,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		deco3d = true,
 	}
 	
+	-- this and knownModEditorMenus should really be in a json instead
 	self.eventPalette = {
 		VFX = {
 			Deco = {
@@ -190,6 +189,55 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 			'paddles',
 		}
 	}
+	
+	local function rpath(str)
+		return (str:gsub('/', '.'))
+	end
+	
+	-- hmm...
+	self.knownModEditorMenus = {
+		beattools = {
+			{
+				path = 'files/bookmarkList.lua', name = 'Bookmark List', from = 'helpers.SetNextWindowPos', to = 'imgui.End()',
+				replace = {
+					'mod.config.bookmarkList = imgui.Begin("Bookmarks"', 'cs.enabledModEMenus["beattools"]["Bookmark List"] = imgui.Begin("Bookmarks##keyframer"',
+					'window_flag', "cs.resetwindows and 'ImGuiCond_Always' or 'ImGuiCond_FirstUseEver'", 'mod', 'mods.beattools', 'cs:noSelection()', 'cs:clearSelection()', 
+					'cs.selectedEvent = cs.level.events[utilitools.files.beattools.easing.getIndex(bookmark.event)]', 'cs:selectSingle("marker", cs.level.events[utilitools.files.beattools.easing.getIndex(bookmark.event)])'
+				}
+			},
+			{
+				path = 'files/calculator.lua', name = 'Calculator', from = 'helpers.SetNextWindowPos', to = 'imgui.End()',
+				replace = {
+					'mod.config.editorCalculator = imgui.Begin("Calculate"', 'cs.enabledModEMenus["beattools"]["Calculator"] = imgui.Begin("Calculate##keyframer"',
+					'window_flag', "cs.resetwindows and 'ImGuiCond_Always' or 'ImGuiCond_FirstUseEver'", 'mod', 'mods.beattools'
+				}, prefix = 'local function calc(m) local func = loadstring("return tostring(" .. m .. ")") if func then return pcall(func) else return false, "" end end'
+			}
+		},
+		['editor-guide'] = {
+			{
+				path = 'lovely.toml', from = 'helpers.SetNextWindowPos', suffix = 'mods["editor-guide"].config.window = oldSetting', to = 'imgui.End()', name = 'Editor Guide', 
+				prefix = 'local editorGuide = require "editorGuide"; local oldSetting = mods["editor-guide"].config.window; mods["editor-guide"].config.window = true',
+				replace = {"haveWindowOpen", "cs.enabledModEMenus['editor-guide']['Editor Guide']", 'window_flag', "cs.resetwindows and 'ImGuiCond_Always' or 'ImGuiCond_FirstUseEver'"}
+			}
+		}
+	}
+	self.loadedModEMenus = {}
+	self.enabledModEMenus = {}
+	
+	for k, v in pairs(self.knownModEditorMenus) do
+		if mods[k] and mods[k].enabled then
+			local path = mods[k].path .. '/'
+			for i, entry in ipairs(v) do
+				local chunk = pyp.get(path, entry, k .. '_' .. entry.name)
+				if chunk then
+					self.enabledModEMenus[k] = self.enabledModEMenus[k] or {}
+					self.enabledModEMenus[k][entry.name] = false
+					self.loadedModEMenus[k] = self.loadedModEMenus[k] or {}
+					self.loadedModEMenus[k][entry.name] = chunk
+				end
+			end
+		end
+	end
 	
 	if self.level then
 		self:resetLoads()
@@ -1297,6 +1345,22 @@ function st:imgui()
 		self.resetwindows = false
 	end
 	
+	for k, menus in pairs(self.enabledModEMenus) do
+		for name, enabled in pairs(menus) do
+			if enabled then
+				local chunk = self.loadedModEMenus[k] and self.loadedModEMenus[k][name]
+				if chunk then
+					local ok, err = pcall(chunk)
+					if not ok then
+						print("failed to run", k, name, err)
+					end
+				else
+					print("no loaded chunk for", k, name, "???")
+				end
+			end
+		end
+	end
+	
 	helpers.SetNextWindowPos(950, 50, window_flag)
 	helpers.SetNextWindowSize(250, 450, window_flag)
 	imgui.Begin("Event Editor##keyframer",nil,inputFlag) -- todo: make thses use cmd.ModifyKeys
@@ -1366,8 +1430,10 @@ function st:imgui()
 	
 	helpers.SetNextWindowPos(470, 500, window_flag)
 	helpers.SetNextWindowSize(730, 220, window_flag)
-	if imgui.Begin("Timeline ##keyframer",nil,inputFlag) then
-		--local drawlist = imgui.GetWindowDrawList()
+		helpers.SetNextWindowPos(470, 500, window_flag)
+	helpers.SetNextWindowSize(730, 220, window_flag)
+	imgui.Begin("Timeline ##keyframer",nil,inputFlag)
+		local drawlist = imgui.GetWindowDrawList()
 		
 		local function snapBeat(b)
 			local subdiv = self:getBeatSnapValue() or 1
@@ -1378,29 +1444,19 @@ function st:imgui()
 		end
 		
 		local function line(x1, y1, x2, y2, c, w)
-			love.graphics.setColor(c)
-			love.graphics.setLineWidth(w)
-			love.graphics.line(x1,y1,x2,y2)
+			drawlist:AddLine({x1, y1}, {x2, y2}, c, w)
 		end
 		local function rect(x, y, w, h, c)
-			love.graphics.setColor(c)
-			love.graphics.setLineWidth(0)
-			love.graphics.rectangle("fill", x, y, w, h)
+			drawlist:AddRectFilled({x, y}, {x + w, y + h}, c)
 		end
-		local function text(x, y, c, t, r)
-			love.graphics.setColor(c)
-			local r = r or 0
-			love.graphics.print(t, x, y, math.rad(r))
+		local function text(x, y, c, t)
+			drawlist:AddText_Vec2({x, y}, c, t)
 		end
 		local function quad(x1, y1, x2, y2, x3, y3, x4, y4, c)
-			love.graphics.setColor(c)
-			love.graphics.setLineWidth(0)
-			love.graphics.polygon("fill", x1, y1, x2, y2, x3, y3, x4, y4)
+			drawlist:AddQuadFilled({x1, y1}, {x2, y2}, {x3, y3}, {x4, y4}, c)
 		end
 		local function triangle(x1, y1, x2, y2, x3, y3, c)
-			love.graphics.setColor(c)
-			love.graphics.setLineWidth(0)
-			love.graphics.polygon("fill", x1, y1, x2, y2, x3, y3)
+			drawlist:AddTriangleFilled({x1, y1}, {x2, y2}, {x3, y3}, c)
 		end
 		
 		local winpos = imgui.GetWindowPos()
@@ -1428,17 +1484,7 @@ function st:imgui()
 			return (x - trackX) / beatSize + scroll
 		end
 		
-		--[[
-		the reason why it's using love.graphics instead now
-		is because i though it was a problem with imgui/love 
-		not likey big drawlists and causes a crash due to 
-		stack limit or something.
-		It is actually caused by rtf reaching stack depth
-		because when x or y scale is 0 it returns before
-		doing love.graphics.pop
-		
-		I think i'll keep this for now though.
-		]]
+		-- we are back to imgui, because i dont like above imgui
 		
 		--[[
 		order:
@@ -1464,106 +1510,94 @@ function st:imgui()
 		local first_beat = math.max(-8, math.floor(scroll))
 		local last_beat = math.ceil(scroll + trackAreaW / beatSize)
 		
-		love.graphics.setCanvas(self.aboveImguiCanv)	
-		love.graphics.clear(1,1,1,0)
-		if not imgui.IsWindowCollapsed() and self.editMode == "none" then
-			love.graphics.setFont(fonts.main)
-			
-			local width = math.max(0, avail.x)
-			local height = math.max(0, avail.y)
-
-			love.graphics.setScissor(cursor.x, cursor.y, width, height)
-			rect(cursor.x, cursor.y, avail.x, avail.y, BGC)
-			rect(cursor.x, tracky, labelW, avail.y, labelBGC)
-			
-			
-			for i, row in ipairs(rows) do
-				local row_index = i - 1 - rowScroll
-				if row_index >= 0 and row_index < visible_rows then
-					local ry = tracky + row_index * rowH
-					
-					if i % 2 == 0 then
-						rect(cursor.x, ry, avail.x, rowH, rowAltC)
-					end
-					
-					line(cursor.x, ry + rowH, cursor.x + avail.x, ry + rowH, lineC, 1)
-					text(cursor.x + 8, ry + rowH / 2 - 7, textC, row.id .. (row.kind == "textdeco" and " [text]" or " [norm]"))
+		rect(cursor.x, cursor.y, avail.x, avail.y, BGC)
+		rect(cursor.x, tracky, labelW, avail.y, labelBGC)
+		
+		
+		for i, row in ipairs(rows) do
+			local row_index = i - 1 - rowScroll
+			if row_index >= 0 and row_index < visible_rows then
+				local ry = tracky + row_index * rowH
+				
+				if i % 2 == 0 then
+					rect(cursor.x, ry, avail.x, rowH, rowAltC)
 				end
+				
+				line(cursor.x, ry + rowH, cursor.x + avail.x, ry + rowH, lineC, 1)
+				text(cursor.x + 8, ry + rowH / 2 - 7, textC, row.id .. (row.kind == "textdeco" and " [text]" or " [norm]"))
 			end
-			
-			
-			for b = first_beat, last_beat do
-				local x = beatToX(b)
-				if x >= trackX and x <= trackX + trackAreaW then
-					line(x, tracky, x, cursor.y + avail.y, lineC, 1)
-				end
+		end
+		
+		
+		for b = first_beat, last_beat do
+			local x = beatToX(b)
+			if x >= trackX and x <= trackX + trackAreaW then
+				line(x, tracky, x, cursor.y + avail.y, lineC, 1)
 			end
-			
-			
-			for b = first_beat, last_beat do
-				local x = beatToX(b)
-				if x >= trackX and x <= trackX + trackAreaW then
-					line(x, cursor.y, x, cursor.y + rulerH, lineHiC, 1)
-					text(x + 3, cursor.y + 2, textC, string.format("%db", b))
-					if beatSize > 40 then
-						for q = 1, self:getBeatSnapValue() do
-							local qx = beatToX(b + q * 1/self:getBeatSnapValue())
-							if qx >= trackX and qx <= trackX + trackAreaW then
-								line(qx, cursor.y + rulerH * 0.6, qx, cursor.y + rulerH, lineC, 1)
-							end
+		end
+		
+		
+		for b = first_beat, last_beat do
+			local x = beatToX(b)
+			if x >= trackX and x <= trackX + trackAreaW then
+				line(x, cursor.y, x, cursor.y + rulerH, lineHiC, 1)
+				text(x + 3, cursor.y + 2, textC, string.format("%db", b))
+				if beatSize > 40 then
+					for q = 1, self:getBeatSnapValue() do
+						local qx = beatToX(b + q * 1/self:getBeatSnapValue())
+						if qx >= trackX and qx <= trackX + trackAreaW then
+							line(qx, cursor.y + rulerH * 0.6, qx, cursor.y + rulerH, lineC, 1)
 						end
 					end
 				end
 			end
-			
-			
-			for _, m in ipairs(self.markers) do
-				local x = beatToX(m.time)
-				if x >= trackX and x <= trackX + trackAreaW + diamondSize then
-					local mc = self.markerColors[m.type] or {1,1,1,1}
-					local sel = self:isSelected("marker", m)
-					local c = sel and keySelC or mc
-					line(x, tracky, x, bottomY, c, sel and 2 or 1)
-					triangle(x - 6, bottomY, x + 6, bottomY, x, bottomY - 8, c)
+		end
+		
+		
+		for _, m in ipairs(self.markers) do
+			local x = beatToX(m.time)
+			if x >= trackX - diamondSize and x <= trackX + trackAreaW + diamondSize then
+				local mc = self.markerColors[m.type] or 0xFFFFFFFF
+				local sel = self:isSelected("marker", m)
+				local c = sel and keySelC or mc
+				line(x, tracky, x, bottomY, c, sel and 2 or 1)
+				triangle(x - 6, bottomY, x + 6, bottomY, x, bottomY - 8, c)
+				
+				local t = m.name or m.var or m.type
+				if t == '' then t = m.type end
+				text(x + 8, bottomY - 14, c, t)
+				if m.duration then
+					line(x, bottomY, beatToX(m.time + (m.duration or 0)), bottomY, c, 2)
+				end
+			end
+		end
+		
+		
+		for i, row in ipairs(rows) do
+			local row_index = i - 1 - rowScroll
+			if row_index >= 0 and row_index < visible_rows then
+				local ry = tracky + row_index * rowH
+				
+				for _, ev in ipairs(row.events) do
+					local y = ry + rowH / 2
+					local x = beatToX(ev.time)
+					local endX = beatToX(ev.time + (ev.duration or 0))
+					local c = self:isSelected("keyframe", ev) and keySelC or keyC
 					
-					local t = m.name or m.var or m.type
-					if t == '' then t = m.type end
-					text(x, bottomY - 7, c, t, -90)
-					if m.duration then
-						line(x, bottomY, beatToX(m.time + (m.duration or 0)), bottomY, c, 2)
+					if x >= trackX - diamondSize and x <= trackX + trackAreaW + diamondSize then
+						line(x, y, endX, y, c, 2)
+						quad(x, y - diamondSize, x + diamondSize, y, x, y + diamondSize, x - diamondSize, y, c)
 					end
 				end
 			end
-			
-			
-			for i, row in ipairs(rows) do
-				local row_index = i - 1 - rowScroll
-				if row_index >= 0 and row_index < visible_rows then
-					local ry = tracky + row_index * rowH
-					
-					for _, ev in ipairs(row.events) do
-						local y = ry + rowH / 2
-						local x = beatToX(ev.time)
-						local endX = beatToX(ev.time + (ev.duration or 0))
-						local c = self:isSelected("keyframe", ev) and keySelC or keyC
-						
-						if x >= trackX - diamondSize and x <= trackX + trackAreaW + diamondSize then
-							line(x, y, endX, y, c, 2)
-							quad(x, y - diamondSize, x + diamondSize, y, x, y + diamondSize, x - diamondSize, y, c)
-						end
-					end
-				end
-			end
-			
-			
-			line(trackX, cursor.y, trackX, cursor.y + avail.y, lineHiC, 1)
-			local px = beatToX(self.editorBeat)
-			if px >= trackX and px <= trackX + trackAreaW then
-				line(px, cursor.y, px, cursor.y + avail.y, playC, 2)
-				triangle(px - 6, cursor.y, px + 6, cursor.y, px, cursor.y + 8, playC)
-			end
-			
-			love.graphics.setScissor()
+		end
+		
+		
+		line(trackX, cursor.y, trackX, cursor.y + avail.y, lineHiC, 1)
+		local px = beatToX(self.editorBeat)
+		if px >= trackX and px <= trackX + trackAreaW then
+			line(px, cursor.y, px, cursor.y + avail.y, playC, 2)
+			triangle(px - 6, cursor.y, px + 6, cursor.y, px, cursor.y + 8, playC)
 		end
 		
 		-- fuckass controls
@@ -1684,57 +1718,91 @@ function st:imgui()
 				end
 			end
 		end
-	else
-		love.graphics.setCanvas(self.aboveImguiCanv)	
-		love.graphics.clear(1,1,1,0)
-	end
-	love.graphics.setCanvas()
 	imgui.End()
 	
 	helpers.SetNextWindowPos(0, 500, window_flag)
 	helpers.SetNextWindowSize(250, 220, window_flag)
 	imgui.Begin("Settings ##keyframer",nil,inputFlag)
-		shuv.usePalette = helpers.InputBool("Use Palette", shuv.usePalette or false)
-		
-		self.rateMod = helpers.SliderFloat('Playback speed (0.25x-2x)',
-			self.rateMod, 0.25, 2)
-		self.rateMod = math.floor(self.rateMod * 20 + 0.5) / 20
-		if imgui.IsItemActive() and self.isPlaying and self.source then
-			self.source:setPitch(cs.rateMod)
-		end
-		
-		local beatSnapText = 'None'
+		if imgui.BeginTabBar("##settingsTabs") then
+			if imgui.BeginTabItem("Playback") then
+				self.rateMod = helpers.SliderFloat('Playback speed (0.25x-2x)',
+					self.rateMod, 0.25, 2)
+				self.rateMod = math.floor(self.rateMod * 20 + 0.5) / 20
+				if imgui.IsItemActive() and self.isPlaying and self.source then
+					self.source:setPitch(cs.rateMod)
+				end
+				
+				local beatSnapText = 'None'
 
-		if imgui.Button('-##beatminus') then
-			self.beatSnap = self.beatSnap - 1
-		end
-		imgui.SameLine()
-		if imgui.Button('+##beatplus') then
-			self.beatSnap = self.beatSnap + 1
-		end
+				if imgui.Button('-##beatminus') then
+					self.beatSnap = self.beatSnap - 1
+				end
+				imgui.SameLine()
+				if imgui.Button('+##beatplus') then
+					self.beatSnap = self.beatSnap + 1
+				end
 
-		if self.beatSnap == -2 then
-			self.beatSnap = #self.beatSnapValues
-		elseif self.beatSnap > #self.beatSnapValues then
-			self.beatSnap = -1
-		end
+				if self.beatSnap == -2 then
+					self.beatSnap = #self.beatSnapValues
+				elseif self.beatSnap > #self.beatSnapValues then
+					self.beatSnap = -1
+				end
 
-		if self.beatSnap ~= 0 then
-			beatSnapText = '1/' .. self:getBeatSnapValue()
-		end
+				if self.beatSnap ~= 0 then
+					beatSnapText = '1/' .. self:getBeatSnapValue()
+				end
 
-		imgui.SameLine()
-		if self.beatSnap == -1 then
-			imgui.Text("Beat Snap: 1/")
-			imgui.SameLine()
-			self.customBeatSnap = helpers.InputInt('##custombeat', self.customBeatSnap)
-			self.customBeatSnap = math.max(self.customBeatSnap, 1)
-		else
-			imgui.Text("Beat Snap: " .. beatSnapText)
+				imgui.SameLine()
+				if self.beatSnap == -1 then
+					imgui.Text("Beat Snap: 1/")
+					imgui.SameLine()
+					self.customBeatSnap = helpers.InputInt('##custombeat', self.customBeatSnap)
+					self.customBeatSnap = math.max(self.customBeatSnap, 1)
+				else
+					imgui.Text("Beat Snap: " .. beatSnapText)
+				end
+				
+				imgui.EndTabItem()
+			end
+			
+			if imgui.BeginTabItem("Viewport") then
+				shuv.usePalette = helpers.InputBool("Use Palette", shuv.usePalette or false)
+				
+				--canvases would be here probably
+				
+				self.gridScale = helpers.InputInt("Grid Size", self.gridScale)
+				imgui.EndTabItem()
+			end
+			
+			if imgui.BeginTabItem("Mod Menus") then
+				local any = false
+				for k, menus in pairs(self.loadedModEMenus) do
+					local hasEntries = false
+					for _ in pairs(menus) do
+						hasEntries = true
+						break
+					end
+					
+					if hasEntries then
+						any = true
+						if imgui.TreeNode_Str(k .. " ##modmenu_tree_" .. k) then
+							for name, chunk in pairs(menus) do
+								self.enabledModEMenus[k] = self.enabledModEMenus[k] or {}
+								local current = self.enabledModEMenus[k][name] or false
+								self.enabledModEMenus[k][name] = helpers.InputBool(name .. " ##modmenu_" .. k .. "_" .. name, current)
+							end
+							imgui.TreePop()
+						end
+					end
+				end
+				if not any then
+					imgui.Text("No mod menus found/known")
+				end
+				imgui.EndTabItem()
+			end
+				
+			imgui.EndTabBar()
 		end
-		
-		self.gridScale = helpers.InputInt("Grid Size", self.gridScale)
-		
 	imgui.End()
 	
 	if self.errorDialogue then
@@ -2263,10 +2331,6 @@ st:setFgDraw(function(self) -- this is a mess
 	
 	if self.editMode == "none" then
 		self:imgui()
-	else
-		love.graphics.setCanvas(self.aboveImguiCanv)	
-		love.graphics.clear(1,1,1,0)
-		love.graphics.setCanvas()
 	end
 end)
 
