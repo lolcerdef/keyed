@@ -65,14 +65,42 @@ function pyp.getString(root, entry)
 end
 
 function pyp.get(root, entry, chunkName)
+	local etype = entry.type or "fromto"
+	local name = chunkName or entry.name or "pyp_chunk"
+	if etype == "require" then
+		if (not root) or (root == '') then return end
+		if (not entry.path) or (entry.path == '') then return end
+		local str = pyp.loadFile(root, entry.path)
+		if not str then
+			print("no file content: skipping", entry.name)
+			return nil
+		end
+		
+		if entry.replace then
+			str = pyp.doReplace(str, entry.replace)
+		end
+		if entry.prefix then
+			str = entry.prefix .. '\n' .. str
+		end
+		if entry.suffix then
+			str = str .. '\n' .. entry.suffix
+		end
+		
+		local chunk, err = loadstring(str, name)
+		if chunk then
+			return chunk()
+		else
+			print("failed to load", entry.name, err)
+			return nil
+		end
+	end
+	
 	local str = pyp.getString(root, entry)
 	if not str then
 		print("no string: skipping", entry.name)
 		return nil
 	end
-	print(str)
 	
-	local name = chunkName or entry.name or "pyp_chunk"
 	local chunk, err = loadstring(str, name)
 	if chunk then
 		return chunk

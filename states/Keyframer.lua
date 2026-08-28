@@ -197,8 +197,8 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	-- hmm...
 	self.knownModEditorMenus = {
 		beattools = {
-			{
-				path = 'files/bookmarkList.lua', name = 'Bookmark List', from = 'helpers.SetNextWindowPos', to = 'imgui.End()',
+			--[[{
+				type = 'fromto', path = 'files/bookmarkList.lua', name = 'Bookmark List', from = 'helpers.SetNextWindowPos', to = 'imgui.End()',
 				replace = {
 					'mod.config.bookmarkList = imgui.Begin("Bookmarks"', 'cs.enabledModEMenus["beattools"]["Bookmark List"] = imgui.Begin("Bookmarks##keyframer"',
 					'window_flag', "cs.resetwindows and 'ImGuiCond_Always' or 'ImGuiCond_FirstUseEver'", 'mod', 'mods.beattools', 'cs:noSelection()', 'cs:clearSelection()', 
@@ -206,16 +206,29 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 				}
 			},
 			{
-				path = 'files/calculator.lua', name = 'Calculator', from = 'helpers.SetNextWindowPos', to = 'imgui.End()',
+				type = 'fromto', path = 'files/calculator.lua', name = 'Calculator', from = 'helpers.SetNextWindowPos', to = 'imgui.End()',
 				replace = {
 					'mod.config.editorCalculator = imgui.Begin("Calculate"', 'cs.enabledModEMenus["beattools"]["Calculator"] = imgui.Begin("Calculate##keyframer"',
 					'window_flag', "cs.resetwindows and 'ImGuiCond_Always' or 'ImGuiCond_FirstUseEver'", 'mod', 'mods.beattools'
 				}, prefix = 'local function calc(m) local func = loadstring("return tostring(" .. m .. ")") if func then return pcall(func) else return false, "" end end'
+			},]]
+			{
+				type = 'require', path = 'files/calculator.lua', name = 'Calculator', replace = {
+					'mod.config.editorCalculator', 'cs.enabledModEMenus["beattools"]["Calculator"]', "Calculate", "Calculate##keyframer",
+					'mod', 'mods.beattools',
+				}
+			},
+			{
+				type = 'require', path = 'files/bookmarkList.lua', name = 'Bookmark List', replace = {
+					'mod.config.bookmarkList', 'cs.enabledModEMenus["beattools"]["Bookmark List"]', '"Bookmarks', '"Bookmarks##keyframer',
+					'mod', 'mods.beattools', 'cs:noSelection()', 'cs:clearSelection()', 'cs.selectedEvent = cs.level.events[utilitools.files.beattools.easing.getIndex(bookmark.event)]',
+					'cs:selectSingle("marker", cs.level.events[utilitools.files.beattools.easing.getIndex(bookmark.event)])'
+				}
 			}
 		},
 		['editor-guide'] = {
 			{
-				path = 'lovely.toml', from = 'helpers.SetNextWindowPos', suffix = 'mods["editor-guide"].config.window = oldSetting', to = 'imgui.End()', name = 'Editor Guide', 
+				type = 'fromto', path = 'lovely.toml', from = 'helpers.SetNextWindowPos', suffix = 'mods["editor-guide"].config.window = oldSetting', to = 'imgui.End()', name = 'Editor Guide', 
 				prefix = 'local editorGuide = require "editorGuide"; local oldSetting = mods["editor-guide"].config.window; mods["editor-guide"].config.window = true',
 				replace = {"haveWindowOpen", "cs.enabledModEMenus['editor-guide']['Editor Guide']", 'window_flag', "cs.resetwindows and 'ImGuiCond_Always' or 'ImGuiCond_FirstUseEver'"}
 			}
@@ -1350,7 +1363,7 @@ function st:imgui()
 			if enabled then
 				local chunk = self.loadedModEMenus[k] and self.loadedModEMenus[k][name]
 				if chunk then
-					local ok, err = pcall(chunk)
+					local ok, err = pcall(chunk, window_flag, inputFlag)
 					if not ok then
 						print("failed to run", k, name, err)
 					end
