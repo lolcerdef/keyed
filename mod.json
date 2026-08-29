@@ -2,8 +2,10 @@
     "author": "lol_cerdef",
     "description": "Keyframe your deco objects.",
     "name": "Keyed",
-    "config": [
-	],
+    "config": {
+		"enabledModEMenus": {
+		}
+	},
     "id": "keyed",
     "version": "69420"
 }

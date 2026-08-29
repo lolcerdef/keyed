@@ -1,5 +1,6 @@
 local st = Gamestate:new('Keyframer')
 
+local keyedConfig = mods.keyed.config
 local function convertCol(c)
 	local a = math.floor(c / 0x1000000) % 0x100
 	local r = math.floor(c / 0x10000) % 0x100
@@ -143,111 +144,37 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		deco3d = true,
 	}
 	
-	-- this and knownModEditorMenus should really be in a json instead
-	self.eventPalette = {
-		VFX = {
-			Deco = {
-				'deco',
-				'textdeco',
-				'advancetextdeco',
-				--[[
-				'deco3d',
-				'camera3d',]]
-				'loadCustomFont',
-				'newCanvas',
-				'editCanvas',
-				'decoShader',
-				'shader_uniform',
-				'stamp',
-				'aft',
-			},
-			Color = {
-				'setBgColor',
-				'setColor',
-				'setJoystickColor',
-				'outline',
-			},
-			Other = {
-				'noise',
-				'hom',
-				'ease',
-				'setBoolean',
-				'songNameOverride',
-				'playSound', -- i don't think they know where to put this, and i don't either
-			}
-		},
-		Editor = {
-			'bookmark',
-			'comment',
-			'tag',
-		},
-		Gameplay = {
-			'showResults',
-			--'play',
-			'setBPM',
-			'retime',
-			'paddles',
-		}
-	}
-	
-	local function rpath(str)
-		return (str:gsub('/', '.'))
-	end
+	local data = keyed_needed_data
+	self.eventPalette = data.eventPalette
 	
 	-- hmm...
-	self.knownModEditorMenus = {
-		beattools = {
-			--[[{
-				type = 'fromto', path = 'files/bookmarkList.lua', name = 'Bookmark List', from = 'helpers.SetNextWindowPos', to = 'imgui.End()',
-				replace = {
-					'mod.config.bookmarkList = imgui.Begin("Bookmarks"', 'cs.enabledModEMenus["beattools"]["Bookmark List"] = imgui.Begin("Bookmarks##keyframer"',
-					'window_flag', "cs.resetwindows and 'ImGuiCond_Always' or 'ImGuiCond_FirstUseEver'", 'mod', 'mods.beattools', 'cs:noSelection()', 'cs:clearSelection()', 
-					'cs.selectedEvent = cs.level.events[utilitools.files.beattools.easing.getIndex(bookmark.event)]', 'cs:selectSingle("marker", cs.level.events[utilitools.files.beattools.easing.getIndex(bookmark.event)])'
-				}
-			},
-			{
-				type = 'fromto', path = 'files/calculator.lua', name = 'Calculator', from = 'helpers.SetNextWindowPos', to = 'imgui.End()',
-				replace = {
-					'mod.config.editorCalculator = imgui.Begin("Calculate"', 'cs.enabledModEMenus["beattools"]["Calculator"] = imgui.Begin("Calculate##keyframer"',
-					'window_flag', "cs.resetwindows and 'ImGuiCond_Always' or 'ImGuiCond_FirstUseEver'", 'mod', 'mods.beattools'
-				}, prefix = 'local function calc(m) local func = loadstring("return tostring(" .. m .. ")") if func then return pcall(func) else return false, "" end end'
-			},]]
-			{
-				type = 'require', path = 'files/calculator.lua', name = 'Calculator', replace = {
-					'mod.config.editorCalculator', 'cs.enabledModEMenus["beattools"]["Calculator"]', "Calculate", "Calculate##keyframer",
-					'mod', 'mods.beattools',
-				}
-			},
-			{
-				type = 'require', path = 'files/bookmarkList.lua', name = 'Bookmark List', replace = {
-					'mod.config.bookmarkList', 'cs.enabledModEMenus["beattools"]["Bookmark List"]', '"Bookmarks', '"Bookmarks##keyframer',
-					'mod', 'mods.beattools', 'cs:noSelection()', 'cs:clearSelection()', 'cs.selectedEvent = cs.level.events[utilitools.files.beattools.easing.getIndex(bookmark.event)]',
-					'cs:selectSingle("marker", cs.level.events[utilitools.files.beattools.easing.getIndex(bookmark.event)])'
-				}
-			}
-		},
-		['editor-guide'] = {
-			{
-				type = 'fromto', path = 'lovely.toml', from = 'helpers.SetNextWindowPos', suffix = 'mods["editor-guide"].config.window = oldSetting', to = 'imgui.End()', name = 'Editor Guide', 
-				prefix = 'local editorGuide = require "editorGuide"; local oldSetting = mods["editor-guide"].config.window; mods["editor-guide"].config.window = true',
-				replace = {"haveWindowOpen", "cs.enabledModEMenus['editor-guide']['Editor Guide']", 'window_flag', "cs.resetwindows and 'ImGuiCond_Always' or 'ImGuiCond_FirstUseEver'"}
-			}
-		}
-	}
 	self.loadedModEMenus = {}
-	self.enabledModEMenus = {}
-	
-	for k, v in pairs(self.knownModEditorMenus) do
+	self.enabledModEMenus = helpers.copy(keyedConfig.enabledModEMenus or {})
+
+	for k, v in pairs(data.moddedEditorMenus) do
 		if mods[k] and mods[k].enabled then
 			local path = mods[k].path .. '/'
 			for i, entry in ipairs(v) do
 				local chunk = pyp.get(path, entry, k .. '_' .. entry.name)
 				if chunk then
 					self.enabledModEMenus[k] = self.enabledModEMenus[k] or {}
-					self.enabledModEMenus[k][entry.name] = false
+					if self.enabledModEMenus[k][entry.name] == nil then
+						self.enabledModEMenus[k][entry.name] = false
+					end
 					self.loadedModEMenus[k] = self.loadedModEMenus[k] or {}
 					self.loadedModEMenus[k][entry.name] = chunk
 				end
+			end
+		end
+	end
+	
+	self.pEventDecoders = {}
+	for k, v in pairs(data.paletteEventDecoders) do
+		if mods[k] and mods[k].enabled then
+			local path = mods[k].path .. '/'
+			local chunk = pyp.get(path, v, k .. 'pEventDecoder')
+			if chunk then
+				table.insert(self.pEventDecoders, chunk)
 			end
 		end
 	end
@@ -1338,6 +1265,28 @@ st:setUpdate(function(self, dt)
 		
 		self:selectSingle(isMarker and 'marker' or 'keyframe', ev)
 		self.placeEvent = ''
+	elseif self.placeEvent ~= '' then
+		local ev = nil
+		for i, v in ipairs(self.pEventDecoders) do
+			local success, result = pcall(v, self.placeEvent)
+			if success then
+				ev = result
+			end
+		end
+		if type(ev) == 'table' and Event.info[ev.type] then
+			self.cmd:executeNew(cmd.CreateEvent, ev)
+			-- i dont expect it not to be a marker, but better safe than sorry
+			local isMarker = self.markerColors[ev.type] ~= nil
+			if isMarker then
+				self:resetMarkers()
+			else
+				self:resetDecoEvents(ev.type, ev.id)
+			end
+			
+			self:selectSingle(isMarker and 'marker' or 'keyframe', ev)
+		end
+		
+		self.placeEvent = ''
 	end
 	
 	if self.editMode ~= "none" and maininput:pressed('mouse1') then
@@ -1349,6 +1298,15 @@ st:setUpdate(function(self, dt)
 	end
 	
 end)
+
+function st:setModMenuEnabled(k, name, value)
+	self.enabledModEMenus[k] = self.enabledModEMenus[k] or {}
+	if self.enabledModEMenus[k][name] ~= value then
+		self.enabledModEMenus[k][name] = value
+		keyedConfig.enabledModEMenus = self.enabledModEMenus
+		bbp.utils.saveConfig("keyed")
+	end
+end
 
 function st:imgui()
 	local inputFlag = nil
@@ -1367,7 +1325,7 @@ function st:imgui()
 					if not ok then
 						print("failed to run", k, name, err)
 					end
-				else
+				elseif mods[k] and mods[k].enabled then
 					print("no loaded chunk for", k, name, "???")
 				end
 			end
@@ -1802,7 +1760,8 @@ function st:imgui()
 							for name, chunk in pairs(menus) do
 								self.enabledModEMenus[k] = self.enabledModEMenus[k] or {}
 								local current = self.enabledModEMenus[k][name] or false
-								self.enabledModEMenus[k][name] = helpers.InputBool(name .. " ##modmenu_" .. k .. "_" .. name, current)
+								local newVal = helpers.InputBool(name .. " ##modmenu_" .. k .. "_" .. name, current)
+								self:setModMenuEnabled(k, name, newVal)
 							end
 							imgui.TreePop()
 						end

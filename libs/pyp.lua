@@ -35,26 +35,63 @@ function pyp.doReplace(str, list)
 	return str
 end
 
+function pyp.doPrefix(str, list)
+	if #list % 2 ~= 0 then 
+		print('prefix list needs to be even')
+		return str
+	end
+	for i = 1, #list, 2 do
+		local target = list[i]
+		local text = list[i + 1]
+		str = str:gsub(escape(target), text .. "%0")
+	end
+	return str
+end
+
+function pyp.doSuffix(str, list)
+	if #list % 2 ~= 0 then 
+		print('suffix list needs to be even')
+		return str
+	end
+	for i = 1, #list, 2 do
+		local target = list[i]
+		local text = list[i + 1]
+		str = str:gsub(escape(target), "%0" .. text)
+	end
+	return str
+end
+
 function pyp.getString(root, entry)
 	if (not root) or (root == '') then return end
 	if (not entry.path) or (entry.path == '') then return end
-	if (not entry.from) or (entry.from == '') then return end
-	if (not entry.to) or (entry.to == '') then return end
-	local inclusive = entry.inclusive
-	if inclusive == nil then inclusive = true end
-	
+
 	local fileContent = pyp.loadFile(root, entry.path)
-	local section = pyp.getSection(fileContent, entry.from, entry.to, inclusive)
+	if not fileContent then return nil end
+
+	local section
+	if entry.from and entry.from ~= '' and entry.to and entry.to ~= '' then
+		local inclusive = entry.inclusive
+		if inclusive == nil then inclusive = true end
+		section = pyp.getSection(fileContent, entry.from, entry.to, inclusive)
+	else
+		section = fileContent
+	end
 	
 	if section then
 		if entry.replace then
 			section = pyp.doReplace(section, entry.replace)
 		end
 		if entry.prefix then
-			section = entry.prefix .. '\n' .. section
+			section = pyp.doPrefix(section, entry.prefix)
 		end
 		if entry.suffix then
-			section = section .. '\n' .. entry.suffix
+			section = pyp.doSuffix(section, entry.suffix)
+		end
+		if entry.before then
+			section = entry.before .. '\n' .. section
+		end
+		if entry.after then
+			section = section .. '\n' .. entry.after
 		end
 	else
 		print('found nothing:', entry.from, "to", entry.to, "in", root .. entry.path)
@@ -65,45 +102,21 @@ function pyp.getString(root, entry)
 end
 
 function pyp.get(root, entry, chunkName)
-	local etype = entry.type or "fromto"
-	local name = chunkName or entry.name or "pyp_chunk"
-	if etype == "require" then
-		if (not root) or (root == '') then return end
-		if (not entry.path) or (entry.path == '') then return end
-		local str = pyp.loadFile(root, entry.path)
-		if not str then
-			print("no file content: skipping", entry.name)
-			return nil
-		end
-		
-		if entry.replace then
-			str = pyp.doReplace(str, entry.replace)
-		end
-		if entry.prefix then
-			str = entry.prefix .. '\n' .. str
-		end
-		if entry.suffix then
-			str = str .. '\n' .. entry.suffix
-		end
-		
-		local chunk, err = loadstring(str, name)
-		if chunk then
-			return chunk()
-		else
-			print("failed to load", entry.name, err)
-			return nil
-		end
-	end
-	
 	local str = pyp.getString(root, entry)
 	if not str then
 		print("no string: skipping", entry.name)
 		return nil
 	end
+	print(str)
 	
+	local name = chunkName or entry.name or "pyp_chunk"
 	local chunk, err = loadstring(str, name)
 	if chunk then
-		return chunk
+		if entry.run then
+			return chunk()
+		else
+			return chunk
+		end
 	else
 		print("failed to load", entry.name, err)
 		return nil
