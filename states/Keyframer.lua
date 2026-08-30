@@ -35,6 +35,7 @@ local loadTheseMarkers = {
 	newCanvas = true,
 	--decoShader = true,
 	tags = true, 
+	stamp = true,
 } -- probably more i'm forgetting rn
 -- tags inset events into self.playEvents, perhaps this could be used?
 -- like maybe self.playEvents get rebuilt when a tag is added/removed/modified
@@ -346,14 +347,14 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 			startMouseY = mouse.ry + self.pan[2],
 			startX = deco and deco.x or 300,
 			startY = deco and deco.y or 180,
-			startZ = nil,
+			startZ = deco and deco.z or nil,
 			startR = deco and deco.r or 0,
 			startSX = deco and deco.sx or 1,
 			startSY = deco and deco.sy or 1,
-			startSZ = nil,
+			startSZ = deco and deco.sz or nil,
 			decoRef = deco,
 			eventRef = eventRef,
-			shuvState = shuv.usePalette
+			shuvState = self.editInfo.shuvState or shuv.usePalette
 		}
 		shuv.usePalette = false
 	end
@@ -715,6 +716,7 @@ end
 function st:resetLoads()
 	self:resetMarkers()
 	self:resetDecos()
+	self:updateStamps()
 end
 
 function st:rebuildTimelineRows()
@@ -933,6 +935,23 @@ function st:setBGColor()
 	end
 	self.bgColor = color
 	self.voidColor = vcolor or self.voidColor
+end
+
+function st:updateStamps()
+	local stamps = self.markersByType.stamp
+	if not stamps then return end
+	
+	if self.editorBeat < (self.lastEditorBeat) - 0.0001 then
+		for _, canv in pairs(self.vfx.stampCanvases) do
+			canv:renderTo(function() love.graphics.clear() end)
+		end
+	end
+	
+	for _, m in ipairs(stamps) do
+		if m.time > self.lastEditorBeat and m.time <= self.editorBeat then
+			Event.onBeat.stamp(m)
+		end
+	end
 end
 
 function st:updatePlayer()
@@ -1205,6 +1224,7 @@ st:setUpdate(function(self, dt)
 	self.p.y = self.p._actualY - self.pan[2]
 	
 	if self.editorBeat < (self.lastEditorBeat or self.editorBeat) - 0.0001 then
+		self:updateStamps()
 		self:rebuildDecoObjects()
 	end
 	self.lastEditorBeat = self.editorBeat
@@ -1221,6 +1241,7 @@ st:setUpdate(function(self, dt)
 		self.cBeat = self.editorBeat
 		self.timelineScroll = self.editorBeat - 50/self.beatSize
 		
+		self:updateStamps()
 		for _, v in pairs(self.decoObjects) do
 			v:update(dt)
 		end
@@ -2152,11 +2173,16 @@ st:setFgDraw(function(self) -- this is a mess
 				wy = math.floor(wy / gridScale + 0.5) * gridScale
 			end
 			
-			deco.x = wx - self.pan[1]
-			deco.y = wy - self.pan[2]
+			if self.lockedAxis == 'x' or self.lockedAxis == 'none' then
+				deco.x = wx - self.pan[1]
+				self.editInfo.x = wx
+			end
+			if self.lockedAxis == 'y' or self.lockedAxis == 'none' then
+				deco.y = wy - self.pan[2]
+				self.editInfo.y = wy
+			end
+			
 			deco:drawSprite()
-			self.editInfo.x = wx
-			self.editInfo.y = wy
 			
 				deco.x, deco.y = deco.originalX, deco.originalY
 		elseif self.editMode == "scale" then
@@ -2271,7 +2297,7 @@ st:setFgDraw(function(self) -- this is a mess
 	if not success then print("failed drawing deco") end
 	if err then print(err) end
 	
-	love.graphics.setColor(1, 0, 0)
+	love.graphics.setColor(.99, 0, 0)
 	love.graphics.setLineWidth(2)
 	love.graphics.rectangle("line", -self.pan[1] - 1, -self.pan[2] - 1, 602, 362)
 	
