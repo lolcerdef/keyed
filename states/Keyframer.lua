@@ -35,7 +35,9 @@ local loadTheseMarkers = {
 	newCanvas = true,
 	--decoShader = true,
 	tags = true, 
-	stamp = true,
+	stamp = true, -- i feel like these should be a keyframe instead, but thats for later me
+	--i realize the more small things that pile up the worse it gets, but thats also for later me
+	aft,
 } -- probably more i'm forgetting rn
 -- tags inset events into self.playEvents, perhaps this could be used?
 -- like maybe self.playEvents get rebuilt when a tag is added/removed/modified
@@ -716,7 +718,7 @@ end
 function st:resetLoads()
 	self:resetMarkers()
 	self:resetDecos()
-	self:updateStamps()
+	self:updateCanvs()
 end
 
 function st:rebuildTimelineRows()
@@ -937,6 +939,11 @@ function st:setBGColor()
 	self.voidColor = vcolor or self.voidColor
 end
 
+function st:updateCanvs()
+	self:updateStamps()
+	self:updateAfts()
+end
+
 function st:updateStamps()
 	local stamps = self.markersByType.stamp
 	if not stamps then return end
@@ -950,6 +957,23 @@ function st:updateStamps()
 	for _, m in ipairs(stamps) do
 		if m.time > self.lastEditorBeat and m.time <= self.editorBeat then
 			Event.onBeat.stamp(m)
+		end
+	end
+end
+
+function st:updateAfts()
+	local afts = self.markersByType.aft
+	if not afts then return end
+	
+	if self.editorBeat < (self.lastEditorBeat) - 0.0001 then
+		for _, canv in pairs(self.vfx.aft) do
+			canv.canvas:renderTo(function() love.graphics.clear() end)
+		end
+	end
+	
+	for _, m in ipairs(afts) do
+		if m.time > self.lastEditorBeat and m.time <= self.editorBeat then
+			Event.onBeat.aft(m)
 		end
 	end
 end
@@ -1224,7 +1248,7 @@ st:setUpdate(function(self, dt)
 	self.p.y = self.p._actualY - self.pan[2]
 	
 	if self.editorBeat < (self.lastEditorBeat or self.editorBeat) - 0.0001 then
-		self:updateStamps()
+		self:updateCanvs()
 		self:rebuildDecoObjects()
 	end
 	self.lastEditorBeat = self.editorBeat
@@ -1241,7 +1265,7 @@ st:setUpdate(function(self, dt)
 		self.cBeat = self.editorBeat
 		self.timelineScroll = self.editorBeat - 50/self.beatSize
 		
-		self:updateStamps()
+		self:updateCanvs()
 		for _, v in pairs(self.decoObjects) do
 			v:update(dt)
 		end
