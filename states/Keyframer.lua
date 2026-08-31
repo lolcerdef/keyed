@@ -2102,39 +2102,46 @@ function st:updateDecos()
 	self:updateAdvanceTextDecos()
 end
 
-st:setFgDraw(function(self) -- this is a mess
-	if self.editMode ~= "none" then
-		local palette = shuv.usePalette and shuv.pal or shuv.paldefault
+function st:drawGrid(bgc)
+	if cs.gridScale and cs.gridScale > 0 then
+		love.graphics.setLineWidth(1)
+		local s = cs.gridScale
 		
-		local bgc = palette[cs.bgColor] or {r=255,g=255,b=255}
-		local vc = palette[cs.voidColor] or {r=255,g=255,b=255}
-		love.graphics.clear(vc.r/255, vc.g/255, vc.b/255)
+		love.graphics.setColor(math.abs(bgc.r/255 - 0.15),math.abs(bgc.g/255 - 0.15),math.abs(bgc.b/255 - 0.15), 1)
 		
-		love.graphics.setColor(bgc.r/255, bgc.g/255, bgc.b/255)
-		love.graphics.rectangle('fill',-cs.pan[1],-cs.pan[2],project.res.x,project.res.y)
+		local offsetX = -cs.pan[1] % s
+		local offsetY = -cs.pan[2] % s
 		
-		if cs.gridScale and cs.gridScale > 0 then
-			love.graphics.setLineWidth(1)
-			local s = cs.gridScale
-			
-			love.graphics.setColor(math.abs(bgc.r/255 - 0.15),math.abs(bgc.g/255 - 0.15),math.abs(bgc.b/255 - 0.15), 1)
-			
-			local offsetX = -cs.pan[1] % s
-			local offsetY = -cs.pan[2] % s
-			
-			for x = offsetX, 600, s do
-				love.graphics.line(x, 0, x, 360)
-			end
-			
-			for y = offsetY, 360, s do
-				love.graphics.line(0, y, 600, y)
-			end
+		for x = offsetX, 600, s do
+			love.graphics.line(x, 0, x, 360)
 		end
+		
+		for y = offsetY, 360, s do
+			love.graphics.line(0, y, 600, y)
+		end
+	end
+end
+
+st:setFgDraw(function(self) -- this is a mess
+	-- i think the grid and bg is no longer a mess
+	local palette = shuv.usePalette and shuv.pal or shuv.paldefault
+	local bgc = palette[cs.bgColor] or {r=255,g=255,b=255}
+	local vc = palette[cs.voidColor] or {r=255,g=255,b=255}
+	if self.editMode ~= 'none' then
+		love.graphics.clear(vc.r/255, vc.g/255, vc.b/255)
+		self:drawGrid(bgc)
 	end
 	
 	local oldCanv = love.graphics.getCanvas()
 	love.graphics.setCanvas(self.canv)
-	love.graphics.clear()
+	
+	color(cs.voidColor)
+	love.graphics.rectangle('fill',0,0,project.res.x,project.res.y)
+	
+	color(cs.bgColor)
+	love.graphics.rectangle('fill',-cs.pan[1],-cs.pan[2],project.res.x,project.res.y)
+	self:drawGrid(bgc)
+	
 	love.graphics.setCanvas(oldCanv)
 	
 	local success, err = pcall(function()
