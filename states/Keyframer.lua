@@ -2204,11 +2204,17 @@ st:setFgDraw(function(self) -- this is a mess
 				wy = math.floor(wy / gridScale + 0.5) * gridScale
 			end
 			
-			if self.lockedAxis == 'x' or self.lockedAxis == 'none' then
+			if self.lockedAxis == 'x' then
 				deco.x = wx - self.pan[1]
 				self.editInfo.x = wx
-			end
-			if self.lockedAxis == 'y' or self.lockedAxis == 'none' then
+				self.editInfo.y = self.editInfo.originalY
+			elseif self.lockedAxis == 'y' then
+				deco.y = wy - self.pan[2]
+				self.editInfo.y = wy
+				self.editInfo.x = self.editInfo.originalX
+			else
+				deco.x = wx - self.pan[1]
+				self.editInfo.x = wx
 				deco.y = wy - self.pan[2]
 				self.editInfo.y = wy
 			end
