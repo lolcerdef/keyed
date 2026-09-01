@@ -22,6 +22,8 @@ local textC = 0xFFB0B0B0
 local playC = 0xFF3AA0FF
 local keyC = 0xFFE0C040
 local keySelC = 0xFFFF6060
+local selBoxC = 0xFF90FF4F
+local selBoxFillC = 0x3390FF4F
 
 local function eventSort(a, b)
 	if a.time == b.time then
@@ -35,8 +37,7 @@ local loadTheseMarkers = {
 	newCanvas = true,
 	--decoShader = true,
 	tags = true, 
-	stamp = true, -- i feel like these should be a keyframe instead, but thats for later me
-	--i realize the more small things that pile up the worse it gets, but thats also for later me
+	stamp = true, 
 	aft,
 } -- probably more i'm forgetting rn
 -- tags inset events into self.playEvents, perhaps this could be used?
@@ -97,6 +98,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	self.decos = {}
 	self.selectedEvents = { type = nil, events = {} }
 	self.copiedEvents = { type = nil, events = {} }
+	self.selectBoxActive = false
 	
 	self.decoObjects = {}
 	
@@ -109,6 +111,11 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	self.draggingMarker = nil
 	self.markersByType = {}
 	
+	self.overlappingEventsDialogue = false
+	self.overlappingEventsList = {}
+	self.overlappingEventsType = nil
+	
+	-- i feel like some markers right now should be keyframes (for example advancetextdeco, stamps, eases, uniforms, etc.)
 	-- i should really do it so that it shows the events sprite instead
 	self.markerColors = {
 		bookmark = 0xFFFFD86B,
@@ -816,12 +823,11 @@ end
 function st:selectSingle(kind, obj)
 	self.selectedEvents = { type = kind, events = { [obj] = true } }
 end
---todo: fix selection rendering bug
-function st:addSelect(kind, obj)
-	if self.selectedEvents.kind == nil then
-		self.selectedEvents.kind = kind
+function st:addSelect(kind, obj) -- im not actually sure why i seperated markers and keyframes in select
+	if self.selectedEvents.type == nil then
+		self.selectedEvents.type = kind
 	end
-	if kind ~= self.selectedEvents.kind then
+	if kind ~= self.selectedEvents.type then
 		print('mismatch selection kinds')
 		return
 	end
@@ -829,6 +835,14 @@ function st:addSelect(kind, obj)
 end
 function st:isSelected(kind, obj)
 	return self.selectedEvents.type == kind and self.selectedEvents.events[obj] == true
+end
+function st:getSelectedFromGroup(kind, group)
+	for _, ev in ipairs(group) do
+		if self:isSelected(kind, ev) then
+			return ev
+		end
+	end
+	return nil
 end
 function st:getFirstOfEList(list)
 	local obj = next(list.events)
@@ -1569,21 +1583,52 @@ function st:imgui()
 			end
 		end
 		
-		
+		local markerGroups, markerGroupOrder = {}, {}
 		for _, m in ipairs(self.markers) do
-			local x = beatToX(m.time)
+			local rkey = math.floor(m.time * 1000 + 0.5) / 1000
+			if not markerGroups[rkey] then
+				markerGroups[rkey] = {}
+				table.insert(markerGroupOrder, rkey)
+			end
+			table.insert(markerGroups[rkey], m)
+		end
+		table.sort(markerGroupOrder)
+		
+		for _, rkey in ipairs(markerGroupOrder) do
+			local group = markerGroups[rkey]
+			local x = beatToX(rkey)
 			if x >= trackX - diamondSize and x <= trackX + trackAreaW + diamondSize then
-				local mc = self.markerColors[m.type] or 0xFFFFFFFF
-				local sel = self:isSelected("marker", m)
-				local c = sel and keySelC or mc
-				line(x, tracky, x, bottomY, c, sel and 2 or 1)
-				triangle(x - 6, bottomY, x + 6, bottomY, x, bottomY - 8, c)
-				
-				local t = m.name or m.var or m.type
-				if t == '' then t = m.type end
-				text(x + 8, bottomY - 14, c, t)
-				if m.duration then
-					line(x, bottomY, beatToX(m.time + (m.duration or 0)), bottomY, c, 2)
+				local selectedInGroup = #group > 1 and self:getSelectedFromGroup("marker", group)
+				if selectedInGroup then
+					-- one event in this stack is selected, so obviously they dont exist
+					group = { selectedInGroup }
+				end
+				if #group == 1 then
+					local m = group[1]
+					local mc = self.markerColors[m.type] or 0xFFFFFFFF
+					local sel = self:isSelected("marker", m)
+					local c = sel and keySelC or mc
+					line(x, tracky, x, bottomY, c, sel and 2 or 1)
+					triangle(x - 6, bottomY, x + 6, bottomY, x, bottomY - 8, c)
+					
+					local t = m.name or m.var or m.type
+					if t == '' then t = m.type end
+					text(x + 8, bottomY - 14, c, t)
+					if m.duration then
+						line(x, bottomY, beatToX(m.time + (m.duration or 0)), bottomY, c, 2)
+					end
+				else
+					local sel = false
+					for _, m in ipairs(group) do
+						if self:isSelected("marker", m) then
+							sel = true
+							break
+						end
+					end
+					local c = sel and keySelC or 0xFFFFFFFF
+					line(x, tracky, x, bottomY, c, sel and 2 or 1)
+					triangle(x - 6, bottomY, x + 6, bottomY, x, bottomY - 8, c)
+					text(x + 8, bottomY - 14, c, #group .. ' events')
 				end
 			end
 		end
@@ -1593,16 +1638,47 @@ function st:imgui()
 			local row_index = i - 1 - rowScroll
 			if row_index >= 0 and row_index < visible_rows then
 				local ry = tracky + row_index * rowH
+				local y = ry + rowH / 2
 				
+				local timeGroups, timeOrder = {}, {}
 				for _, ev in ipairs(row.events) do
-					local y = ry + rowH / 2
-					local x = beatToX(ev.time)
-					local endX = beatToX(ev.time + (ev.duration or 0))
-					local c = self:isSelected("keyframe", ev) and keySelC or keyC
+					local rkey = math.floor(ev.time * 1000 + 0.5) / 1000
+					if not timeGroups[rkey] then
+						timeGroups[rkey] = {}
+						table.insert(timeOrder, rkey)
+					end
+					table.insert(timeGroups[rkey], ev)
+				end
+				
+				for _, rkey in ipairs(timeOrder) do
+					local group = timeGroups[rkey]
+					local x = beatToX(rkey)
 					
 					if x >= trackX - diamondSize and x <= trackX + trackAreaW + diamondSize then
-						line(x, y, endX, y, c, 2)
-						quad(x, y - diamondSize, x + diamondSize, y, x, y + diamondSize, x - diamondSize, y, c)
+						local selectedInGroup = #group > 1 and self:getSelectedFromGroup("keyframe", group)
+						if selectedInGroup then
+							-- one event in this stack is selected, so obviously they dont exist
+							group = { selectedInGroup }
+						end
+						if #group == 1 then
+							local ev = group[1]
+							local endX = beatToX(ev.time + (ev.duration or 0))
+							local c = self:isSelected("keyframe", ev) and keySelC or keyC
+							line(x, y, endX, y, c, 2)
+							quad(x, y - diamondSize, x + diamondSize, y, x, y + diamondSize, x - diamondSize, y, c)
+						else
+							local sel, endX = false, x
+							for _, ev in ipairs(group) do
+								if self:isSelected("keyframe", ev) then sel = true end
+								endX = math.max(endX, beatToX(ev.time + (ev.duration or 0)))
+							end
+							local c = sel and keySelC or keyC
+							if endX > x then
+								line(x, y, endX, y, c, 2)
+							end
+							quad(x, y - diamondSize, x + diamondSize, y, x, y + diamondSize, x - diamondSize, y, c)
+							text(x - 3, y - 6, textC, tostring(#group))
+						end
 					end
 				end
 			end
@@ -1614,6 +1690,17 @@ function st:imgui()
 		if px >= trackX and px <= trackX + trackAreaW then
 			line(px, cursor.y, px, cursor.y + avail.y, playC, 2)
 			triangle(px - 6, cursor.y, px + 6, cursor.y, px, cursor.y + 8, playC)
+		end
+		
+		if self.selectBoxActive then
+			local bx1, bx2 = math.min(self.selectBoxStartX, self.selectBoxEndX), math.max(self.selectBoxStartX, self.selectBoxEndX)
+			local by1, by2 = math.min(self.selectBoxStartY, self.selectBoxEndY), math.max(self.selectBoxStartY, self.selectBoxEndY)
+			
+			rect(bx1, by1, bx2 - bx1, by2 - by1, selBoxFillC)
+			line(bx1, by1, bx2, by1, selBoxC, 2) -- i know AddRect exists but :P
+			line(bx1, by2, bx2, by2, selBoxC, 2)
+			line(bx1, by1, bx1, by2, selBoxC, 2)
+			line(bx2, by1, bx2, by2, selBoxC, 2)
 		end
 		
 		-- fuckass controls
@@ -1643,15 +1730,37 @@ function st:imgui()
 					end
 					self.draggingMarker = closestMarker
 					if closestMarker then
-						local alreadyMulti = self:isSelected("marker", closestMarker) and self:getEListCount(self.selectedEvents) > 1
-						if not alreadyMulti then
-							selectFunc(self, "marker", closestMarker)
+						local rkey = math.floor(closestMarker.time * 1000 + 0.5) / 1000
+						local group = {}
+						for _, m in ipairs(self.markers) do
+							if math.floor(m.time * 1000 + 0.5) / 1000 == rkey then
+								table.insert(group, m)
+							end
 						end
 						
-						self.dragStartTimes = {}
-						self.dragAnchorStartTime = closestMarker.time
-						for _, ev in ipairs(self:getEList(self.selectedEvents)) do
-							self.dragStartTimes[ev] = ev.time
+						local groupTarget = closestMarker
+						if #group > 1 then
+							groupTarget = self:getSelectedFromGroup("marker", group)
+						end
+						
+						if #group > 1 and not groupTarget then
+							self.draggingMarker = nil
+							self.dragStartTimes = nil
+							self.overlappingEventsList = group
+							self.overlappingEventsType = "marker"
+							self.overlappingEventsDialogue = true
+						else
+							self.draggingMarker = groupTarget
+							local alreadyMulti = self:isSelected("marker", groupTarget) and self:getEListCount(self.selectedEvents) > 1
+							if not alreadyMulti then
+								selectFunc(self, "marker", groupTarget)
+							end
+							
+							self.dragStartTimes = {}
+							self.dragAnchorStartTime = groupTarget.time
+							for _, ev in ipairs(self:getEList(self.selectedEvents)) do
+								self.dragStartTimes[ev] = ev.time
+							end
 						end
 					else
 						self:clearSelection()
@@ -1684,22 +1793,48 @@ function st:imgui()
 						end
 					end
 					if closest then
-						local alreadyMulti = self:isSelected("keyframe", closest) and self:getEListCount(self.selectedEvents) > 1
-						if not alreadyMulti then
-							selectFunc(self, "keyframe", closest)
+						local rkey = math.floor(closest.time * 1000 + 0.5) / 1000
+						local group = {}
+						for _, ev in ipairs(row.events) do
+							if math.floor(ev.time * 1000 + 0.5) / 1000 == rkey then
+								table.insert(group, ev)
+							end
 						end
 						
-						self.dragStartTimes = {}
-						self.dragAnchorStartTime = closest.time
-						for _, ev in ipairs(self:getEList(self.selectedEvents)) do
-							self.dragStartTimes[ev] = ev.time
+						local groupTarget = closest
+						if #group > 1 then
+							groupTarget = self:getSelectedFromGroup("keyframe", group)
+						end
+						
+						if #group > 1 and not groupTarget then
+							self.draggingKey = nil
+							self.draggingKeyRow = nil
+							self.dragStartTimes = nil
+							self.overlappingEventsList = group
+							self.overlappingEventsType = "keyframe"
+							self.overlappingEventsDialogue = true
+						else
+							local alreadyMulti = self:isSelected("keyframe", groupTarget) and self:getEListCount(self.selectedEvents) > 1
+							if not alreadyMulti then
+								selectFunc(self, "keyframe", groupTarget)
+							end
+							
+							self.dragStartTimes = {}
+							self.dragAnchorStartTime = groupTarget.time
+							for _, ev in ipairs(self:getEList(self.selectedEvents)) do
+								self.dragStartTimes[ev] = ev.time
+							end
+							self.draggingKey = groupTarget
+							self.draggingKeyRow = row
 						end
 					else
-						self:clearSelection()
+						self.draggingKey = nil
+						self.draggingKeyRow = nil
 						self.dragStartTimes = nil
+						self.selectBoxActive = true
+						self.selectBoxStartX, self.selectBoxStartY = mx, my
+						self.selectBoxEndX, self.selectBoxEndY = mx, my
 					end
-					self.draggingKey = closest
-					self.draggingKeyRow = closest and row or nil
 				end
 				if self.draggingKey and imgui.IsMouseDragging(0) and self.dragStartTimes then
 					local newTime = clampedSnap(xToBeat(mx))
@@ -1711,11 +1846,50 @@ function st:imgui()
 					for _, r in ipairs(rows) do
 						table.sort(r.events, eventSort)
 					end
+				elseif self.selectBoxActive and imgui.IsMouseDragging(0) then
+					self.selectBoxEndX, self.selectBoxEndY = mx, my
 				end
 			end
 		end
 		
 		if imgui.IsMouseReleased(0) then
+			if self.selectBoxActive then
+				local bx1, bx2 = math.min(self.selectBoxStartX, self.selectBoxEndX), math.max(self.selectBoxStartX, self.selectBoxEndX)
+				local by1, by2 = math.min(self.selectBoxStartY, self.selectBoxEndY), math.max(self.selectBoxStartY, self.selectBoxEndY)
+				local beatMin, beatMax = xToBeat(bx1), xToBeat(bx2)
+				
+				local boxed = {}
+				for i, row in ipairs(rows) do
+					local row_index = i - 1 - rowScroll
+					if row_index >= 0 and row_index < visible_rows then
+						local ry = tracky + row_index * rowH
+						if ry + rowH >= by1 and ry <= by2 then
+							for _, ev in ipairs(row.events) do
+								if ev.time >= beatMin and ev.time <= beatMax then
+									table.insert(boxed, ev)
+								end
+							end
+						end
+					end
+				end
+				
+				local shiftHeld = maininput:down("shift")
+				local canAdd = shiftHeld and self.selectedEvents.type == 'keyframe' and self:getEListCount(self.selectedEvents) > 0
+				
+				if #boxed > 0 then
+					if not canAdd then
+						self.selectedEvents = { type = 'keyframe', events = {} }
+					end
+					for _, ev in ipairs(boxed) do
+						self:addSelect('keyframe', ev)
+					end
+				elseif not shiftHeld then
+					self:clearSelection()
+				end
+				
+				self.selectBoxActive = false
+			end
+			
 			self:commitDragTimes()
 			self.draggingKey = nil
 			self.draggingKeyRow = nil
@@ -1821,6 +1995,38 @@ function st:imgui()
 			imgui.EndTabBar()
 		end
 	imgui.End()
+	
+	if self.overlappingEventsDialogue then
+		helpers.SetNextWindowPos(190, 240, window_flag)
+		helpers.SetNextWindowSize(240, 240, window_flag)
+		self.overlappingEventsDialogue = imgui.Begin("Overlapping events!", true)
+			imgui.Text("Select which event to select:")
+			imgui.Separator()
+			for i, v in ipairs(self.overlappingEventsList) do
+				local info = Event.info[v.type]
+				local label = info and info.name or v.type
+				
+				if self.overlappingEventsType == "marker" then
+					local t = v.name or v.var or v.color
+					if t and t ~= '' then
+						label = label .. " (" .. t .. ")"
+					end
+				elseif v.id then
+					label = label .. " [" .. v.id .. "]"
+				end
+				
+				if imgui.Selectable_Bool(label .. "##overlap" .. i) then
+					self.overlappingEventsDialogue = false
+					
+					local selectFunc = self.selectSingle
+					if maininput:down("shift") and self:getEListCount(self.selectedEvents) ~= 0 then
+						selectFunc = self.addSelect
+					end
+					selectFunc(self, self.overlappingEventsType, v)
+				end
+			end
+		imgui.End()
+	end
 	
 	if self.errorDialogue then
 		helpers.SetNextWindowPos(400, 200, window_flag)
@@ -2023,10 +2229,10 @@ function st:updateDecos()
 		local instantProps = isText and instantPropsText or instantPropsDeco
 		
 		local props = isText
-			and {'x','y','sx','sy','rotationinfluence', 'scaleinfluence', 'wrapLen', 'kx', 'ky', 'extraCharSpacing', 'r', 'kyFake', 
-				 'drawLayer', 'drawOrder', 'recolor', 'outline', 'effectCanvas', 'effectCanvasRaw','hide','parentid',
-				 'rotationMode','onlyScaleDistance','colour','justification','font','textString','localize','specialoutline',
-				 'specialcolour','canvas', 'alphadither', 'ditherpercent'}
+			and {'x','y','sx','sy','rotationinfluence','scaleinfluence','wrapLen','kx','ky','extraCharSpacing','r','kyFake',
+				'ditherpercent','drawLayer','drawOrder','recolor','outline','effectCanvas','effectCanvasRaw','hide','parentid',
+				'rotationMode','onlyScaleDistance','colour','justification','font','alphadither','textString','localize',
+				'specialoutline','specialcolour','canvas','prefix'}
 			or  {'x','y','r','sx','sy','ox','oy','kx','ky', 'rotationinfluence','scaleinfluence','uvx','uvy','uvdx','uvdy',
 				 'ecRecolorR','ecRecolorG','ecRecolorB','ecRecolorA', 'sprite', 'drawLayer', 'drawOrder',
 				 'recolor', 'outline', 'effectCanvas', 'effectCanvasRaw','effectCanvasType', 'hide', 'parentid', 'rotationMode',
