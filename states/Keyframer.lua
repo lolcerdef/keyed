@@ -490,10 +490,15 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		self.copiedEvents = helpers.copy(self.selectedEvents)
 	end,'copy selected','ctrl','c')
 	self:addKeybind(function()
-		local events = self:getEList(self.copiedEvents)
-		if #events == 0 then
+		local sourceEvents = self:getEList(self.copiedEvents)
+		if #sourceEvents == 0 then
 			print('paste what events?')
 			return
+		end
+		
+		local events = {}
+		for i, ev in ipairs(sourceEvents) do
+			events[i] = helpers.copy(ev)
 		end
 		
 		local smallestTime = math.huge
