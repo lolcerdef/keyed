@@ -1972,6 +1972,7 @@ function st:imgui()
 				self.gridScale = helpers.InputInt("Grid Size", self.gridScale)
 				
 				imgui.SeparatorText("Layers")
+				self.drawHud = helpers.InputBool("Show HUD", self.drawHud or false) -- also need to update eases
 				self.showOnTop = helpers.InputBool("Show Ontop", self.showOnTop or false)
 				-- jesus christ i just wanted some funny draggy thigns now it looks like shit
 				local minLayer = helpers.InputBool("Minimum Layer", not not self.minLayer or false)
@@ -2453,7 +2454,7 @@ st:setFgDraw(function(self) -- this is a mess
 			self.gm:endOnTopShader()
 			if self.vfx.onTopUI then
 				self.vfx.onTopUI = true
-				--self.gm:drawHud()
+				self.gm:drawHud()
 			end
 			--[[
 			love.graphics.setShader()
