@@ -107,7 +107,7 @@ target = "obj/GameManager.lua"
 pattern = '''function GameManager:drawHud()'''
 position = "after"
 payload = '''
-if cs.name == 'Keyframer' then
+if not cs.drawHud then
 	return
 end
 '''

@@ -76,6 +76,15 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	shuv.disabledUntilNewState = false
 	shuv.resetPal()
 	
+	self.drawHud = true
+	self.showOnTop = true
+	self.minLayer = nil
+	self.maxLayer = nil
+	
+	-- negative one means main canvas, other wise would be string to get a canvas
+	-- currently does nothing
+	self.currentCanvas = -1
+	
 	self.editorBeat = beat or 0
 	self.lastEditorBeat = self.editorBeat
 	self.beatSize = 40
@@ -1465,8 +1474,6 @@ function st:imgui()
 	
 	helpers.SetNextWindowPos(470, 500, window_flag)
 	helpers.SetNextWindowSize(730, 220, window_flag)
-		helpers.SetNextWindowPos(470, 500, window_flag)
-	helpers.SetNextWindowSize(730, 220, window_flag)
 	imgui.Begin("Timeline ##keyframer",nil,inputFlag)
 		local drawlist = imgui.GetWindowDrawList()
 		
@@ -1512,11 +1519,40 @@ function st:imgui()
 		local diamondSize = 6
 		
 		local beatSize = self.beatSize
-		local function beatToX(b)
+		local function beatToX(b) -- maybe this should go to the top of constant things that get made every frame
 			return trackX + (b - scroll) * beatSize
 		end
 		local function xToBeat(x)
 			return (x - trackX) / beatSize + scroll
+		end
+		local function clusterEvents(items, threshold)
+			threshold = threshold or 3
+			local sorted = {}
+			for _, ev in ipairs(items) do table.insert(sorted, ev) end
+			table.sort(sorted, function(a, b) return a.time < b.time end)
+			
+			local groups = {}
+			local currentGroup, lastX = nil, nil
+			for _, ev in ipairs(sorted) do
+				local x = beatToX(ev.time)
+				if currentGroup and lastX and (x - lastX) <= threshold then
+					table.insert(currentGroup, ev)
+				else
+					currentGroup = { ev }
+					table.insert(groups, currentGroup)
+				end
+				lastX = x
+			end
+			return groups
+		end
+		
+		local function findClusterContaining(clusters, item)
+			for _, group in ipairs(clusters) do
+				for _, ev in ipairs(group) do
+					if ev == item then return group end
+				end
+			end
+			return nil
 		end
 		
 		-- we are back to imgui, because i dont like above imgui
@@ -1588,24 +1624,16 @@ function st:imgui()
 			end
 		end
 		
-		local markerGroups, markerGroupOrder = {}, {}
-		for _, m in ipairs(self.markers) do
-			local rkey = math.floor(m.time * 1000 + 0.5) / 1000
-			if not markerGroups[rkey] then
-				markerGroups[rkey] = {}
-				table.insert(markerGroupOrder, rkey)
-			end
-			table.insert(markerGroups[rkey], m)
-		end
-		table.sort(markerGroupOrder)
+		local markerClusters = clusterEvents(self.markers, 3)
 		
-		for _, rkey in ipairs(markerGroupOrder) do
-			local group = markerGroups[rkey]
-			local x = beatToX(rkey)
+		for _, group in ipairs(markerClusters) do
+			local xSum = 0
+			for _, m in ipairs(group) do xSum = xSum + beatToX(m.time) end
+			local x = xSum / #group
+			
 			if x >= trackX - diamondSize and x <= trackX + trackAreaW + diamondSize then
 				local selectedInGroup = #group > 1 and self:getSelectedFromGroup("marker", group)
 				if selectedInGroup then
-					-- one event in this stack is selected, so obviously they dont exist
 					group = { selectedInGroup }
 				end
 				if #group == 1 then
@@ -1625,10 +1653,7 @@ function st:imgui()
 				else
 					local sel = false
 					for _, m in ipairs(group) do
-						if self:isSelected("marker", m) then
-							sel = true
-							break
-						end
+						if self:isSelected("marker", m) then sel = true; break end
 					end
 					local c = sel and keySelC or 0xFFFFFFFF
 					line(x, tracky, x, bottomY, c, sel and 2 or 1)
@@ -1638,31 +1663,22 @@ function st:imgui()
 			end
 		end
 		
-		
 		for i, row in ipairs(rows) do
 			local row_index = i - 1 - rowScroll
 			if row_index >= 0 and row_index < visible_rows then
 				local ry = tracky + row_index * rowH
 				local y = ry + rowH / 2
 				
-				local timeGroups, timeOrder = {}, {}
-				for _, ev in ipairs(row.events) do
-					local rkey = math.floor(ev.time * 1000 + 0.5) / 1000
-					if not timeGroups[rkey] then
-						timeGroups[rkey] = {}
-						table.insert(timeOrder, rkey)
-					end
-					table.insert(timeGroups[rkey], ev)
-				end
+				local rowClusters = clusterEvents(row.events, 3)
 				
-				for _, rkey in ipairs(timeOrder) do
-					local group = timeGroups[rkey]
-					local x = beatToX(rkey)
+				for _, group in ipairs(rowClusters) do
+					local xSum = 0
+					for _, ev in ipairs(group) do xSum = xSum + beatToX(ev.time) end
+					local x = xSum / #group
 					
 					if x >= trackX - diamondSize and x <= trackX + trackAreaW + diamondSize then
 						local selectedInGroup = #group > 1 and self:getSelectedFromGroup("keyframe", group)
 						if selectedInGroup then
-							-- one event in this stack is selected, so obviously they dont exist
 							group = { selectedInGroup }
 						end
 						if #group == 1 then
@@ -1735,13 +1751,8 @@ function st:imgui()
 					end
 					self.draggingMarker = closestMarker
 					if closestMarker then
-						local rkey = math.floor(closestMarker.time * 1000 + 0.5) / 1000
-						local group = {}
-						for _, m in ipairs(self.markers) do
-							if math.floor(m.time * 1000 + 0.5) / 1000 == rkey then
-								table.insert(group, m)
-							end
-						end
+						local markerClusters = clusterEvents(self.markers, 3)
+						local group = findClusterContaining(markerClusters, closestMarker) or { closestMarker }
 						
 						local groupTarget = closestMarker
 						if #group > 1 then
@@ -1798,13 +1809,8 @@ function st:imgui()
 						end
 					end
 					if closest then
-						local rkey = math.floor(closest.time * 1000 + 0.5) / 1000
-						local group = {}
-						for _, ev in ipairs(row.events) do
-							if math.floor(ev.time * 1000 + 0.5) / 1000 == rkey then
-								table.insert(group, ev)
-							end
-						end
+						local rowClusters = clusterEvents(row.events, 3)
+						local group = findClusterContaining(rowClusters, closest) or { closest }
 						
 						local groupTarget = closest
 						if #group > 1 then
@@ -1961,11 +1967,65 @@ function st:imgui()
 			end
 			
 			if imgui.BeginTabItem("Viewport") then
+				imgui.SeparatorText("General")
 				shuv.usePalette = helpers.InputBool("Use Palette", shuv.usePalette or false)
+				self.gridScale = helpers.InputInt("Grid Size", self.gridScale)
 				
+				imgui.SeparatorText("Layers")
+				self.showOnTop = helpers.InputBool("Show Ontop", self.showOnTop or false)
+				-- jesus christ i just wanted some funny draggy thigns now it looks like shit
+				local minLayer = helpers.InputBool("Minimum Layer", not not self.minLayer or false)
+				if minLayer then
+					self.minLayer = self.minLayer or self.savedMinLayer or 0
+					--self.minLayer = helpers.InputInt('##minlayerkeyframer', self.minLayer)
+					local intRef = ffi.new("int[1]", self.minLayer)
+					if imgui.DragInt('##minlayerkeyframer', intRef) then
+						self.minLayer = intRef[0] 
+					end
+				else
+					self.savedMinLayer = self.minLayer
+					self.minLayer = nil
+				end
+				
+				local maxLayer = helpers.InputBool("Maximum Layer", not not self.maxLayer or false)
+				if maxLayer then
+					self.maxLayer = self.maxLayer or self.savedMaxLayer or 0
+					local intRef = ffi.new("int[1]", self.maxLayer)
+					--self.maxLayer = helpers.InputInt('##maxlayerkeyframer', self.maxLayer)
+					if imgui.DragInt('##maxlayerkeyframer', intRef) then
+						self.maxLayer = intRef[0]
+					end
+				else
+					self.savedMaxLayer = self.maxLayer
+					self.maxLayer = nil
+				end
+				
+				imgui.SeparatorText("Canvases")
+				-- cs.canvas (canvas objs), cs.vfx.stampCanvases (just a canvas), and thats it
+				--[[
+				local canvlist = {
+					Canvas = {},
+					StampCanvs = {}
+				}
+				canvlist[1] = "Main Canvas"
+				for k, _ in pairs(self.canvas) do
+					table.insert(canvlist.Canvas, k)
+				end
+				for k, _ in pairs(self.vfx.stampCanvas) do
+					table.insert(canvlist.StampCanvs, k)
+				end
+				
+				imgui.Text("Search:")
+				imgui.SameLine()
+				self.canvasSearch = helpers.InputText("##canvasSearch", self.canvasSearch or '', 9999)
+				
+				local size =  imgui.GetContentRegionAvail()
+				if imgui.BeginListBox("##palette", size) then
+					self.currentCanvas = 
+				end]]
+				-- need to do some sort of thing like buildTree but for general stuff
 				--canvases would be here probably
 				
-				self.gridScale = helpers.InputInt("Grid Size", self.gridScale)
 				imgui.EndTabItem()
 			end
 			
@@ -2248,6 +2308,7 @@ function st:updateDecos()
 			for _, p in ipairs(props) do
 				deco._baseProps[p] = deco[p]
 			end
+			deco._trueHide = deco._baseProps['hide']
 		end
 		
 		local spriteChanged = false
@@ -2289,6 +2350,9 @@ function st:updateDecos()
 			
 			deco._spawnTime = isFirstOfID and e.time or deco._spawnTime or 0
 			deco[p] = newValue
+			if p == "hide" then
+				deco._trueHide = newValue
+			end
 			::nextprop::
 		end
 		
@@ -2304,7 +2368,20 @@ function st:updateDecos()
 		-- for some reason the default cat doesn't show until you put a sprite that doesn't exist
 		-- i should look deeper into it
 		
-		deco:updateLayer() -- just in case
+		deco.hide = deco._trueHide
+		if self.minLayer and deco.layer < self.minLayer then
+			deco.hide = true
+		end
+		if self.maxLayer and self.maxLayer < deco.layer then
+			deco.hide = true
+		end
+		if deco.drawLayer == 'ontop' then
+			if self.showOnTop then
+				deco.hide = deco._trueHide
+			else
+				deco.hide = true
+			end
+		end
 		
 		self.renderDecos[k] = deco
 		::continue::
