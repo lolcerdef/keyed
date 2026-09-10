@@ -32,6 +32,13 @@ local function eventSort(a, b)
 	return a.time < b.time
 end
 
+local decoKindLabel = {
+	deco = " [norm]",
+	textdeco = " [text]",
+	camera3d = " [cam]",
+	deco3d = " [model]",
+}
+
 local loadTheseMarkers = {
 	loadCustomFont = true,
 	newCanvas = true,
@@ -44,6 +51,22 @@ local loadTheseMarkers = {
 -- like maybe self.playEvents get rebuilt when a tag is added/removed/modified
 -- and everything else looks in this?
 -- tags are probably the only thing that does this no?
+-- now im thinking about it i could also do initObjects?
+
+local decoEditProps = {
+	deco = { 'X', 'Y', 'R', 'SX', 'SY' },
+	textdeco = { 'X', 'Y', 'R', 'SX', 'SY' },
+	camera3d = { 'CX', 'CY', 'CZ', 'TX', 'TY', 'TZ' },
+	deco3d = { 'X', 'Y', 'Z', 'RX', 'RY', 'RZ', 'SX', 'SY', 'SZ' },
+}
+
+local editSuffixToProp = {
+	X = 'x', Y = 'y', Z = 'z',
+	CX = 'cx', CY = 'cy', CZ = 'cz',
+	TX = 'tx', TY = 'ty', TZ = 'tz',
+	R = 'r', RX = 'rx', RY = 'ry', RZ = 'rz',
+	SX = 'sx', SY = 'sy', SZ = 'sz',
+}
 
 st:setInit(function(self, level, variant, beat, preloadSoundData)
 	em.clear()
@@ -320,8 +343,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 			if self.selectedEvents.type ~= 'keyframe' then 
 				print("hide what?")
 				return
-			end
-			
+			end			
 			self.cmd:startGroup()
 			local selected = self:getEList(self.selectedEvents)
 			local hide = true
@@ -335,54 +357,13 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		'h'
 	)
 	
-	local function setEditInfo()
-		local list = self:getEList(self.selectedEvents)
-		local endBeat = -math.huge
-		for _, ev in ipairs(list) do
-			local evEnd = ev.time + (ev.duration or 0)
-			if evEnd > endBeat then
-				endBeat = evEnd
-			end
-		end
-		self.editorBeat = endBeat
-		
-		self:updateDecos()
-		
-		local deco, eventRef
-		for _, ev in ipairs(list) do
-			local key = ev.type .. ":" .. ev.id
-			local d = self.decoObjects[key]
-			if d then
-				deco = d
-				eventRef = ev
-				break
-			end
-		end
-		
-		self.editInfo = {
-			multiEdit = (#list > 1),
-			startMouseX = mouse.rx + self.pan[1],
-			startMouseY = mouse.ry + self.pan[2],
-			startX = deco and deco.x or 300,
-			startY = deco and deco.y or 180,
-			startZ = deco and deco.z or nil,
-			startR = deco and deco.r or 0,
-			startSX = deco and deco.sx or 1,
-			startSY = deco and deco.sy or 1,
-			startSZ = deco and deco.sz or nil,
-			decoRef = deco,
-			eventRef = eventRef,
-			shuvState = self.editInfo.shuvState or shuv.usePalette
-		}
-		shuv.usePalette = false
-	end
 	self:addKeybind(function()
 			if self.isPlaying then return end
 			if self.selectedEvents.type ~= 'keyframe' then 
 				print("move what?")
 				return
 			end
-			setEditInfo()
+			self:setEditInfo()
 			self.editMode = "move"
 		end,
 		'move deco',
@@ -394,7 +375,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 				print("scale what?")
 				return
 			end
-			setEditInfo()
+			self:setEditInfo()
 			self.editMode = "scale"
 		end,
 		'scale deco',
@@ -406,7 +387,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 				print("rotate what?")
 				return
 			end
-			setEditInfo()
+			self:setEditInfo()
 			self.editMode = "rotate"
 		end,
 		'rotate deco',
@@ -626,25 +607,76 @@ function st:commitDragTimes()
 	self.dragStartTimes = nil
 end
 
+function st:setEditInfo()
+	local list = self:getEList(self.selectedEvents)
+	local endBeat = -math.huge
+	for _, ev in ipairs(list) do
+		local evEnd = ev.time + (ev.duration or 0)
+		if evEnd > endBeat then
+			endBeat = evEnd
+		end
+	end
+	self.editorBeat = endBeat
+	
+	self:updateDecos()
+	
+	local deco, eventRef, kind
+	for _, ev in ipairs(list) do
+		local key = ev.type .. ":" .. ev.id
+		local d = self.decoObjects[key]
+		if d then
+			deco = d
+			eventRef = ev
+			kind = ev.type
+			break
+		end
+	end
+	
+	local editProps = decoEditProps[kind] or decoEditProps.deco
+	
+	self.editInfo = {
+		multiEdit = (#list > 1),
+		startMouseX = mouse.rx + self.pan[1],
+		startMouseY = mouse.ry + self.pan[2],
+		decoRef = deco,
+		eventRef = eventRef,
+		editProps = editProps,
+		shuvState = self.editInfo.shuvState or shuv.usePalette
+	}
+	
+	if deco then
+		for _, suf in ipairs(editProps) do
+			self.editInfo['start' .. suf] = deco[editSuffixToProp[suf]]
+		end
+	end
+	
+	shuv.usePalette = false
+end
+
 function st:confirmEdit() -- i honestly don't know if i actually want to do multiselect
 	if self.editMode == "none" then return end
 	
 	self.editMode = "none"
 	self.lockedAxis = "none"
 	shuv.usePalette = self.editInfo.shuvState
-	local properties = {'x', 'y', 'z', 'r', 'sx', 'sy', 'sz'}
+	
 	local changes = {}
-	for _, v in ipairs(properties) do
-		if self.editInfo[v] then
-			changes[v] = self.editInfo[v]
+	local hasChanges = false
+	for _, suf in ipairs(self.editInfo.editProps or {}) do
+		local prop = editSuffixToProp[suf]
+		local val = self.editInfo[prop]
+		if val ~= nil then
+			changes[prop] = val
+			hasChanges = true
 		end
 	end
-	self.cmd:executeNew(cmd.ModifyKeys, self.editInfo.eventRef, changes)
-	--bbp.utils.printTable(self.editInfo.eventRef)
+	if hasChanges then
+		self.cmd:executeNew(cmd.ModifyKeys, self.editInfo.eventRef, changes)
+	end
 end
 
 function st:resetMarkers()
-	self.gm:resetLevel()
+	self.playEvents = {}
 	self.markers = {}
 	self.markersByType = {}
 	self.timingInfo.timingPoints = {}
@@ -683,7 +715,7 @@ function st:resetDecos()
 	for _, v in ipairs(self.level.events) do
 		index = index + 1
 		
-		if v.type == "deco" or v.type == "textdeco" then
+		if self.decoTypes[v.type] then --v.type == "deco" or v.type == "textdeco" then
 			if Event.onLoad[v.type](v) then
 				self.drawDecos = false
 			end
@@ -737,6 +769,7 @@ function st:resetDecoEvents(decoType, decoId)
 end
 
 function st:resetLoads()
+	self.gm:resetLevel() -- need to see if anything gets messed up, i dont think it should but you never know
 	self:resetMarkers()
 	self:resetDecos()
 	self:updateCanvs()
@@ -1595,7 +1628,7 @@ function st:imgui()
 				end
 				
 				line(cursor.x, ry + rowH, cursor.x + avail.x, ry + rowH, lineC, 1)
-				text(cursor.x + 8, ry + rowH / 2 - 7, textC, row.id .. (row.kind == "textdeco" and " [text]" or " [norm]"))
+				text(cursor.x + 8, ry + rowH / 2 - 7, textC, row.id .. decoKindLabel[row.kind])
 			end
 		end
 		
@@ -2130,17 +2163,6 @@ function st:imgui()
 	end
 end
 
-local instantPropsDeco = {
-	drawOrder = true,
-	recolor = true,
-}
-local instantPropsText = {
-	drawOrder = true,
-	recolor = true,
-	colour = true,
-	specialcolour = true,
-}
-
 function st:updateDecoSprite(deco)
 	local sprite = deco.sprite
 	local template, animation, frame, speed = nil, nil, nil, nil
@@ -2263,6 +2285,24 @@ function st:updateAdvanceTextDecos()
 	end
 end
 
+
+local instantPropsDeco = {
+	drawOrder = true,
+	recolor = true,
+}
+local instantPropsText = {
+	drawOrder = true,
+	recolor = true,
+	colour = true,
+	specialcolour = true,
+}
+local instantPropsCamera3D = {
+	drawOrder = true,
+}
+local instantPropsDeco3D = {
+	-- nothing
+}
+
 function st:updateDecos()
 	self.renderDecos = self.renderDecos or {}
 	for k, v in pairs(self.decos) do -- will probably need to sort when tags are not ignored
@@ -2273,12 +2313,22 @@ function st:updateDecos()
 		
 		local isFirstOfID = false
 		local isText = v.kind == "textdeco"
+		local isCamera3D = v.kind == "camera3d"
+		local isDeco3D = v.kind == "deco3d"
 		
 		if not self.decoObjects[k] then
 			if isText then
 				self.decoObjects[k] = em.init('TextDeco', {})
 				self.decoObjects[k].kind = "textdeco"
 				self.vfx.textdeco[k:sub(10)] = self.decoObjects[k]
+			elseif isCamera3D then
+				self.decoObjects[k] = em.init('Camera3D', {})
+				self.decoObjects[k].kind = "camera3d"
+				self.vfx.camera3d[k:sub(10)] = self.decoObjects[k]
+			elseif isDeco3D then
+				self.decoObjects[k] = em.init('Deco3D', {})
+				self.decoObjects[k].kind = "deco3d"
+				self.vfx.deco3d[k:sub(8)] = self.decoObjects[k]
 			else
 				self.decoObjects[k] = em.init('Deco', {})
 				self.decoObjects[k].kind = "deco"
@@ -2290,15 +2340,20 @@ function st:updateDecos()
 		
 		local deco = self.decoObjects[k]
 		deco.skipUpdate = true
-		deco.skipRender = false
+		deco.skipRender = isDeco3D
 		
-		local instantProps = isText and instantPropsText or instantPropsDeco
+		local instantProps = isText and instantPropsText
+			or isCamera3D and instantPropsCamera3D
+			or isDeco3D and instantPropsDeco3D
+			or instantPropsDeco
 		
 		local props = isText
 			and {'x','y','sx','sy','rotationinfluence','scaleinfluence','wrapLen','kx','ky','extraCharSpacing','r','kyFake',
 				'ditherpercent','drawLayer','drawOrder','recolor','outline','effectCanvas','effectCanvasRaw','hide','parentid',
 				'rotationMode','onlyScaleDistance','colour','justification','font','alphadither','textString','localize',
 				'specialoutline','specialcolour','canvas','prefix'}
+			or isCamera3D and {'cx','cy','cz','tx','ty','tz','lookRadius','aspectRatio','fov','drawLayer','drawOrder','hide','canvas'}
+			or isDeco3D and {'x','y','z','sx','sy','sz','rx','ry','rz','model','texture','hide','camera','shader','cullMode'}
 			or  {'x','y','r','sx','sy','ox','oy','kx','ky', 'rotationinfluence','scaleinfluence','uvx','uvy','uvdx','uvdy',
 				 'ecRecolorR','ecRecolorG','ecRecolorB','ecRecolorA', 'sprite', 'drawLayer', 'drawOrder',
 				 'recolor', 'outline', 'effectCanvas', 'effectCanvasRaw','effectCanvasType', 'hide', 'parentid', 'rotationMode',
@@ -2357,7 +2412,10 @@ function st:updateDecos()
 			::nextprop::
 		end
 		
-		if isText then
+		if isText or isCamera3D or isDeco3D then
+			if isCamera3D then
+				Event.setCanvas(deco.canvas or '', deco)
+			end
 			deco:updateSprite()
 		else
 			if spriteChanged or deco.spr == nil then
@@ -2386,6 +2444,21 @@ function st:updateDecos()
 		
 		self.renderDecos[k] = deco
 		::continue::
+	end
+	
+	for _, camObj in pairs(self.vfx.camera3d) do
+		camObj.models = {}
+	end
+	for k, v in pairs(self.decos) do
+		if v.kind == "deco3d" then
+			local deco = self.renderDecos[k]
+			if deco and deco.camera and deco.camera ~= '' then
+				local camObj = self.vfx.camera3d[deco.camera]
+				if camObj then
+					camObj.models[k:sub(8)] = true
+				end
+			end
+		end
 	end
 	
 	self:updateAdvanceTextDecos()
@@ -2433,12 +2506,13 @@ st:setFgDraw(function(self) -- this is a mess
 	
 	love.graphics.setCanvas(oldCanv)
 	
+	--yk i realize how fucking large this if statement is
 	local success, err = pcall(function()
 		if self.drawDecos and self.editMode == "none" then
 			love.graphics.setColor(1, 1, 1, 1)
 			self:updateDecos()
 			for _, v in pairs(self.renderDecos) do
-				if not v.parentid or v.parentid == '' then
+				if v.kind ~= 'deco3d' and v.kind ~= 'camera3d' and (not v.parentid or v.parentid == '') then
 					v.originalX, v.originalY = v.x, v.y
 					v.x, v.y = v.originalX - self.pan[1], v.originalY - self.pan[2]
 				end
@@ -2470,8 +2544,22 @@ st:setFgDraw(function(self) -- this is a mess
 			end]]
 			
 			for _, v in pairs(self.renderDecos) do
-				if not v.parentid or v.parentid == '' then
+				if v.kind ~= 'deco3d' and v.kind ~= 'camera3d' and (not v.parentid or v.parentid == '') then
 					v.x, v.y = v.originalX, v.originalY
+				end
+			end
+		elseif self.editMode ~= "none" and self.editInfo.decoRef and (self.editInfo.decoRef.kind == 'deco3d' or self.editInfo.decoRef.kind == 'camera3d') then
+			local info = self.editInfo
+			local er = info.eventRef
+			local dr = info.decoRef
+			local k = er.type
+			
+			if k == 'deco3d' then
+				
+			else
+				--print(self.vfx.camera3d[er.id])
+				if self.vfx.camera3d[er.id] then
+					self.vfx.camera3d[er.id]:draw()
 				end
 			end
 		elseif self.editMode == "move" then
@@ -2627,29 +2715,31 @@ st:setFgDraw(function(self) -- this is a mess
 	love.graphics.setLineWidth(2)
 	love.graphics.rectangle("line", -self.pan[1] - 1, -self.pan[2] - 1, 602, 362)
 	
-	if self.editMode == 'move' then
-		local x1, y1 = self.editInfo.startX - (self.lockedAxis == "x" and 600 or 0), self.editInfo.startY - (self.lockedAxis == "y" and 600 or 0)
-		local x2, y2 = self.editInfo.startX + (self.lockedAxis == "x" and 600 or 0), self.editInfo.startY + (self.lockedAxis == "y" and 600 or 0)
-		love.graphics.line(x1-self.pan[1],y1-self.pan[2],x2-self.pan[1],y2-self.pan[2])
-	elseif self.editMode == 'scale' then
-		local rot = math.rad(self.editInfo.startR or 0)
-		local xdirX, xdirY = math.cos(rot) * 600, math.sin(rot) * 600
-		local ydirX, ydirY = -math.sin(rot) * 600, math.cos(rot) * 600
-		
-		local dx, dy = 0, 0
-		if self.lockedAxis == "x" then
-			dx, dy = xdirX, xdirY
-		elseif self.lockedAxis == "y" then
-			dx, dy = ydirX, ydirY
-		end
-		
-		if self.lockedAxis == "x" or self.lockedAxis == "y" then
-			local x1, y1 = self.editInfo.startX - dx, self.editInfo.startY - dy
-			local x2, y2 = self.editInfo.startX + dx, self.editInfo.startY + dy
+	if not self.editInfo.startZ then
+		if self.editMode == 'move' and self.editInfo.startX then
+			local x1, y1 = self.editInfo.startX - (self.lockedAxis == "x" and 600 or 0), self.editInfo.startY - (self.lockedAxis == "y" and 600 or 0)
+			local x2, y2 = self.editInfo.startX + (self.lockedAxis == "x" and 600 or 0), self.editInfo.startY + (self.lockedAxis == "y" and 600 or 0)
+			love.graphics.line(x1-self.pan[1],y1-self.pan[2],x2-self.pan[1],y2-self.pan[2])
+		elseif self.editMode == 'scale' and self.editInfo.startX then
+			local rot = math.rad(self.editInfo.startR or 0)
+			local xdirX, xdirY = math.cos(rot) * 600, math.sin(rot) * 600
+			local ydirX, ydirY = -math.sin(rot) * 600, math.cos(rot) * 600
 			
-			love.graphics.setColor(1, 0, 0, 1)
-			love.graphics.line(x1 - self.pan[1], y1 - self.pan[2], x2 - self.pan[1], y2 - self.pan[2])
-			love.graphics.setColor(1, 1, 1, 1)
+			local dx, dy = 0, 0
+			if self.lockedAxis == "x" then
+				dx, dy = xdirX, xdirY
+			elseif self.lockedAxis == "y" then
+				dx, dy = ydirX, ydirY
+			end
+			
+			if self.lockedAxis == "x" or self.lockedAxis == "y" then
+				local x1, y1 = self.editInfo.startX - dx, self.editInfo.startY - dy
+				local x2, y2 = self.editInfo.startX + dx, self.editInfo.startY + dy
+				
+				love.graphics.setColor(1, 0, 0, 1)
+				love.graphics.line(x1 - self.pan[1], y1 - self.pan[2], x2 - self.pan[1], y2 - self.pan[2])
+				love.graphics.setColor(1, 1, 1, 1)
+			end
 		end
 	end
 	
