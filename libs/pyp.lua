@@ -107,7 +107,7 @@ function pyp.get(root, entry, chunkName)
 		print("no string: skipping", entry.name)
 		return nil
 	end
-	print(str)
+	--print(str)
 	
 	local name = chunkName or entry.name or "pyp_chunk"
 	local chunk, err = loadstring(str, name)

@@ -19,7 +19,7 @@
 - 3D camera
 - shader rendering
 - Canvases (maybe make it so that you can look at different canvases?)
-- AFTs
+- AFTs / done
 - Tags
 - Selecting decos / no
 - Selecting decos through viewport / no

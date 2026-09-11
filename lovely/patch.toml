@@ -112,3 +112,19 @@ if not cs.drawHud then
 end
 '''
 match_indent = true
+
+[[patches]]
+[patches.pattern]
+target = "levelformat/events/Editor/tag.lua"
+pattern = '''if imgui.Button('Break up tag') then'''
+position = "before"
+payload = '''
+if cs.name == 'Keyframer' then
+	imgui.BeginDisabled()
+	if imgui.Button('Break Up') then
+	end
+	imgui.EndDisabled()
+	return
+end
+'''
+match_indent = true

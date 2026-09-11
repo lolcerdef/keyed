@@ -2350,7 +2350,7 @@ function st:updateDecos()
 		local props = isText
 			and {'x','y','sx','sy','rotationinfluence','scaleinfluence','wrapLen','kx','ky','extraCharSpacing','r','kyFake',
 				'ditherpercent','drawLayer','drawOrder','recolor','outline','effectCanvas','effectCanvasRaw','hide','parentid',
-				'rotationMode','onlyScaleDistance','colour','justification','font','alphadither','textString','localize',
+				'rotationMode','onlyScaleDistance','colour','justification', 'justificationy','font','alphadither','textString','localize',
 				'specialoutline','specialcolour','canvas','prefix'}
 			or isCamera3D and {'cx','cy','cz','tx','ty','tz','lookRadius','aspectRatio','fov','drawLayer','drawOrder','hide','canvas'}
 			or isDeco3D and {'x','y','z','sx','sy','sz','rx','ry','rz','model','texture','hide','camera','shader','cullMode'}
