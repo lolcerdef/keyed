@@ -26,3 +26,4 @@
 - Cranky (for stuff like `p.x`, `p.y`, `p.drawScale` and whatever) / no
 - Probably more I don't remember
 - Figure out why Nhelv is crashing at like after the spiral thingy stuff
+- probably have a function to resolve eases

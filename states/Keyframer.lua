@@ -32,6 +32,56 @@ local function eventSort(a, b)
 	return a.time < b.time
 end
 
+local function resolveEasedValue(events, getVal, baseValue, currentBeat, opts)
+	opts = opts or {}
+	if #events == 0 then return baseValue end
+	
+	local function combine(prev, e)
+		local val = getVal(e)
+		local isAdd = opts.allowAdd and e.mode == 'add' and type(val) == 'number'
+		if isAdd then
+			return prev + val
+		end
+		if val ~= nil then
+			return val
+		end
+		return prev
+	end
+	
+	local base = baseValue
+	for i = 1, #events - 1 do
+		base = combine(base, events[i])
+	end
+	
+	local e = events[#events]
+	local startVal = opts.startOverride and opts.startOverride(e, base) or base
+	local val = getVal(e)
+	local isAdd = opts.allowAdd and e.mode == 'add' and type(val) == 'number'
+	local target
+	if isAdd then
+		target = startVal + val
+	elseif val ~= nil then
+		target = val
+	else
+		target = startVal
+	end
+	
+	local instant = opts.instant and opts.instant(e)
+	local ease = e.ease or 'linear'
+	local duration = e.duration or 0
+	local t = (duration > 0 and not instant)
+		and helpers.clamp((currentBeat - e.time) / duration, 0, 1)
+		or 1
+	
+	if type(target) == 'number' then
+		if type(startVal) ~= 'number' then
+			return target
+		end
+		return helpers.interpolate(startVal, target, t, ease)
+	end
+	return target
+end
+
 local decoKindLabel = {
 	deco = " [norm]",
 	textdeco = " [text]",
@@ -45,7 +95,10 @@ local loadTheseMarkers = {
 	--decoShader = true,
 	tags = true, 
 	stamp = true, 
-	aft,
+	aft = true,
+	--ease = true, --never mind it opened a portal to the void when it errored
+	--setBoolean = true,
+	--initObject = true, --this is probably a bad idea, but i havent set anything up so future me will know
 } -- probably more i'm forgetting rn
 -- tags inset events into self.playEvents, perhaps this could be used?
 -- like maybe self.playEvents get rebuilt when a tag is added/removed/modified
@@ -67,6 +120,133 @@ local editSuffixToProp = {
 	R = 'r', RX = 'rx', RY = 'ry', RZ = 'rz',
 	SX = 'sx', SY = 'sy', SZ = 'sz',
 }
+
+local function transformPoint(m, x, y, z, w)
+	return
+		m[1] * x + m[2] * y + m[3] * z + m[4] * w,
+		m[5] * x + m[6] * y + m[7] * z + m[8] * w,
+		m[9] * x + m[10] * y + m[11] * z + m[12] * w,
+		m[13] * x + m[14] * y + m[15] * z + m[16] * w
+end
+
+local function worldToScreen(x, y, z, cam, width, height)
+	local view = cam:getViewMatrix()
+	local projection = cam:getProjectionMatrix()
+	
+	local vx, vy, vz, vw = transformPoint(view, x, y, z, 1)
+	
+	local cx, cy, cz, cw = transformPoint(projection, vx, vy, vz, vw)
+	
+	if cw <= 0 then
+		return nil
+	end
+	
+	local ndcX = cx / cw
+	local ndcY = cy / cw
+	local screenX = (ndcX + 1) * 0.5 * width
+	local screenY = (1 - ndcY) * 0.5 * height
+	
+	return screenX, screenY
+end
+
+local function rotateVector(v, rx, ry, rz)
+	local cosX, sinX = math.cos(math.rad(rx)), math.sin(math.rad(rx))
+	local cosY, sinY = math.cos(math.rad(ry)), math.sin(math.rad(ry))
+	local cosZ, sinZ = math.cos(math.rad(rz)), math.sin(math.rad(rz))
+	
+    local x, y, z = v.x, v.y, v.z
+	--x
+    local x1 = x
+    local y1 = cosX * y - sinX * z
+    local z1 = sinX * y + cosX * z
+	--y
+    local x2 = cosY * x1 + sinY * z1
+    local y2 = y1
+    local z2 = -sinY * x1 + cosY * z1
+	--z
+    local x3 = cosZ * x2 - sinZ * y2
+    local y3 = sinZ * x2 + cosZ * y2
+    local z3 = z2
+	
+    return x3, y3, z3
+end
+
+local function getScreenAxisLine(x, y, z, axisX, axisY, axisZ, cam, width, height)
+	local view = cam:getViewMatrix()
+	local projection = cam:getProjectionMatrix()
+	local near = cam.near or 0.1
+	local far = cam.far or 1000
+	local ox, oy, oz = transformPoint(view, x, y, z, 1)
+	local dx, dy, dz = transformPoint(view, axisX, axisY, axisZ, 0)
+	local depth0 = -oz
+	local depthD = -dz
+	local farExtent = 100000
+	local t0, t1 = -farExtent, farExtent
+	
+	if math.abs(depthD) > 0.000001 then
+		local tNear = (near - depth0) / depthD
+		local tFar = (far - depth0) / depthD
+		if tNear > tFar then tNear, tFar = tFar, tNear end
+		t0 = math.max(t0, tNear)
+		t1 = math.min(t1, tFar)
+	elseif depth0 < near or depth0 > far then
+		return nil
+	end
+	if t0 >= t1 then
+		return nil
+	end
+	
+	local x1, y1 = worldToScreen(x + axisX * t0, y + axisY * t0, z + axisZ * t0, cam, width, height)
+	local x2, y2 = worldToScreen(x + axisX * t1, y + axisY * t1, z + axisZ * t1, cam, width, height)
+	if not x1 or not x2 then
+		return nil
+	end
+	
+	local sdx = x2 - x1
+	local sdy = y2 - y1
+	if math.abs(sdx) < 0.000001 and math.abs(sdy) < 0.000001 then
+		return nil
+	end
+	
+	local intersections = {}
+	local function addIntersection(ix, iy)
+		if ix >= 0 and ix <= width and iy >= 0 and iy <= height then
+			table.insert(intersections, {ix, iy})
+		end
+	end
+	
+	if math.abs(sdx) > 0.000001 then
+		local t = -x1 / sdx
+		if t >= 0 and t <= 1 then addIntersection(0, y1 + sdy * t) end
+		t = (width - x1) / sdx
+		if t >= 0 and t <= 1 then addIntersection(width, y1 + sdy * t) end
+	end
+	if math.abs(sdy) > 0.000001 then
+		local t = -y1 / sdy
+		if t >= 0 and t <= 1 then addIntersection(x1 + sdx * t, 0) end
+		t = (height - y1) / sdy
+		if t >= 0 and t <= 1 then addIntersection(x1 + sdx * t, height) end
+	end
+	
+	addIntersection(x1, y1)
+	addIntersection(x2, y2)
+	if #intersections < 2 then
+		return nil
+	end
+	
+	local best1, best2, bestDist = intersections[1], intersections[2], -1
+	for i = 1, #intersections do
+		for j = i + 1, #intersections do
+			local a, b = intersections[i], intersections[j]
+			local d = (a[1]-b[1])^2 + (a[2]-b[2])^2
+			if d > bestDist then
+				bestDist, best1, best2 = d, a, b
+			end
+		end
+	end
+	
+	return best1[1], best1[2], best2[1], best2[2]
+end
 
 st:setInit(function(self, level, variant, beat, preloadSoundData)
 	em.clear()
@@ -101,6 +281,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	
 	self.drawHud = true
 	self.showOnTop = true
+	self.showOtherDecosWhileEditing = false
 	self.minLayer = nil
 	self.maxLayer = nil
 	
@@ -128,8 +309,8 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	-- deco:id1 =  {id = "id1", kind = "deco", order = 2, events = {{time = 2, angle = 0, etc.}, etc.}},
 	-- textdeco:otherid = {id = 'otherid', kind = "textdeco", order = 3, events = {{time = 0, angle = 0, etc.}, etc.}}
 	self.decos = {}
-	self.selectedEvents = { type = nil, events = {} }
-	self.copiedEvents = { type = nil, events = {} }
+	self.selectedEvents = { events = {} } -- events[obj] = 'marker' or 'keyframe', mixed selections are allowed
+	self.copiedEvents = { events = {} }
 	self.selectBoxActive = false
 	
 	self.decoObjects = {}
@@ -237,7 +418,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	self.rateMod = 1
 	
 	self.beatSnapValues = { 1, 2, 3, 4, 5, 6, 8, 12, 16 }
-	self.beatSnap = 2
+	self.beatSnap = 4
 	self.customBeatSnap = 16
 	
 	self.gridScale = 30
@@ -258,76 +439,65 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	)
 	self:addKeybind(function()
 			local newEvents = {}
-			if self.selectedEvents.type == 'keyframe' then
-				local touchedKeys = {}
-				local touchedDecos = {}
-				for i, v in ipairs(self:getEList(self.selectedEvents)) do
-					table.insert(newEvents, {type = v.type, time = self.editorBeat, angle = v.angle, id = v.id})
-					local key = v.type .. ":" .. v.id
-					if not touchedKeys[key] then
-						touchedKeys[key] = true
-						table.insert(touchedDecos, {type = v.type, id = v.id})
-					end
+			
+			local touchedKeys = {}
+			local touchedDecos = {}
+			for i, v in ipairs(self:getEList(self.selectedEvents, 'keyframe')) do
+				table.insert(newEvents, {type = v.type, time = self.editorBeat, angle = v.angle, id = v.id})
+				local key = v.type .. ":" .. v.id
+				if not touchedKeys[key] then
+					touchedKeys[key] = true
+					table.insert(touchedDecos, {type = v.type, id = v.id})
 				end
-				
-				if #newEvents > 1 then
-					self.cmd:startGroup()
-					self.cmd:executeNew(cmd.CreateMultiple,newEvents)
-					self.cmd:endGroup("Made "..#newEvents.." keyframes")
-				elseif #newEvents == 1 then
-					self.cmd:executeNew(cmd.CreateEvent, newEvents[1])
-				else
-					print("make what keyframe?")
+			end
+			
+			local touchedTypes = {}
+			for i, v in ipairs(self:getEList(self.selectedEvents, 'marker')) do
+				if v.type ~= 'play' and v.type ~= 'showResults' then
+					local copy = helpers.copy(v)
+					copy.time = self.editorBeat
+					table.insert(newEvents, copy)
+					touchedTypes[v.type] = true
 				end
-				
-				for _, d in ipairs(touchedDecos) do
-					self:resetDecoEvents(d.type, d.id)
-				end
-				
-				local newSelection = { type = 'keyframe', events = {} }
-				for key in pairs(touchedKeys) do
-					local deco = self.decos[key]
-					if deco then
-						for _, ev in ipairs(deco.events) do
-							if ev.time == self.editorBeat then
-								newSelection.events[ev] = true
-							end
+			end
+			
+			if #newEvents == 0 then
+				print("make what event?")
+				return
+			end
+			
+			if #newEvents > 1 then
+				self.cmd:startGroup()
+				self.cmd:executeNew(cmd.CreateMultiple,newEvents)
+				self.cmd:endGroup("Made "..#newEvents.." events")
+			else
+				self.cmd:executeNew(cmd.CreateEvent, newEvents[1])
+			end
+			
+			for _, d in ipairs(touchedDecos) do
+				self:resetDecoEvents(d.type, d.id)
+			end
+			if next(touchedTypes) then
+				self:resetMarkers()
+			end
+			
+			local newSelection = { events = {} }
+			for key in pairs(touchedKeys) do
+				local deco = self.decos[key]
+				if deco then
+					for _, ev in ipairs(deco.events) do
+						if ev.time == self.editorBeat then
+							newSelection.events[ev] = 'keyframe'
 						end
 					end
 				end
-				self.selectedEvents = newSelection
-			elseif self.selectedEvents.type == 'marker' then
-				local touchedTypes = {}
-				for i, v in ipairs(self:getEList(self.selectedEvents)) do
-					if v.type ~= 'play' and v.type ~= 'showResults' then
-						local copy = helpers.copy(v)
-						copy.time = self.editorBeat
-						table.insert(newEvents, copy)
-						touchedTypes[v.type] = true
-					end
-				end
-				
-				if #newEvents > 1 then
-					self.cmd:executeNew(cmd.CreateMultiple,newEvents)
-				elseif #newEvents == 1 then
-					self.cmd:executeNew(cmd.CreateEvent, newEvents[1])
-				else
-					print("make what events?")
-				end
-				
-				self:resetMarkers()
-				
-				local newSelection = { type = 'marker', events = {} }
-				for _, m in ipairs(self.markers) do
-					if touchedTypes[m.type] and m.time == self.editorBeat then
-						newSelection.events[m] = true
-					end
-				end
-				
-				self.selectedEvents = newSelection
-			else
-				print("nothing selected?")
 			end
+			for _, m in ipairs(self.markers) do
+				if touchedTypes[m.type] and m.time == self.editorBeat then
+					newSelection.events[m] = 'marker'
+				end
+			end
+			self.selectedEvents = newSelection
 		end,
 		'make selected event',
 		'i'
@@ -340,12 +510,12 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		'delete'
 	)
 	self:addKeybind(function()
-			if self.selectedEvents.type ~= 'keyframe' then 
+			local selected = self:getEList(self.selectedEvents, 'keyframe')
+			if #selected == 0 then 
 				print("hide what?")
 				return
 			end			
 			self.cmd:startGroup()
-			local selected = self:getEList(self.selectedEvents)
 			local hide = true
 			if maininput:down("shift") then hide = false end
 			for i, v in ipairs(selected) do
@@ -359,7 +529,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	
 	self:addKeybind(function()
 			if self.isPlaying then return end
-			if self.selectedEvents.type ~= 'keyframe' then 
+			if self:getEListCount(self.selectedEvents, 'keyframe') == 0 then 
 				print("move what?")
 				return
 			end
@@ -371,7 +541,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	)
 	self:addKeybind(function()
 			if maininput:down("ctrl") or self.isPlaying then return end
-			if self.selectedEvents.type ~= 'keyframe' then 
+			if self:getEListCount(self.selectedEvents, 'keyframe') == 0 then 
 				print("scale what?")
 				return
 			end
@@ -383,7 +553,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	)
 	self:addKeybind(function()
 			if maininput:down('ctrl') or maininput:down('shift') or self.isPlaying then return end
-			if self.selectedEvents.type ~= 'keyframe' then 
+			if self:getEListCount(self.selectedEvents, 'keyframe') == 0 then 
 				print("rotate what?")
 				return
 			end
@@ -454,6 +624,17 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 			if self.editMode == "none" then
 				self.exitDialogue = true
 			else
+				local deco = self.editInfo.decoRef
+				if deco then
+					for _, suf in ipairs(self.editInfo.editProps or {}) do
+						local prop = editSuffixToProp[suf]
+						local startVal = self.editInfo['start' .. suf]
+						if startVal ~= nil then
+							deco[prop] = startVal
+						end
+					end
+				end
+				
 				self.editMode = "none"
 				self.lockedAxis = "none"
 				shuv.usePalette = self.editInfo.shuvState
@@ -480,15 +661,24 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		self.copiedEvents = helpers.copy(self.selectedEvents)
 	end,'copy selected','ctrl','c')
 	self:addKeybind(function()
-		local sourceEvents = self:getEList(self.copiedEvents)
-		if #sourceEvents == 0 then
+		local sourceKeyframes = self:getEList(self.copiedEvents, 'keyframe')
+		local sourceMarkers = self:getEList(self.copiedEvents, 'marker')
+		if #sourceKeyframes == 0 and #sourceMarkers == 0 then
 			print('paste what events?')
 			return
 		end
 		
 		local events = {}
-		for i, ev in ipairs(sourceEvents) do
-			events[i] = helpers.copy(ev)
+		local eventKinds = {} -- keyed by the copied event table, since ids aren't stable yet
+		for i, ev in ipairs(sourceKeyframes) do
+			local copy = helpers.copy(ev)
+			table.insert(events, copy)
+			eventKinds[copy] = 'keyframe'
+		end
+		for i, ev in ipairs(sourceMarkers) do
+			local copy = helpers.copy(ev)
+			table.insert(events, copy)
+			eventKinds[copy] = 'marker'
 		end
 		
 		local smallestTime = math.huge
@@ -510,48 +700,51 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 			self.cmd:executeNew(cmd.CreateEvent, events[1])
 		end
 		
-		local pasteType = self.copiedEvents.type
-		local newSelection = { type = pasteType, events = {} }
-		if pasteType == 'keyframe' then
-			local wanted = {}
-			for _, ev in ipairs(events) do
-				wanted[ev.type] = wanted[ev.type] or {}
-				wanted[ev.type][ev.id] = wanted[ev.type][ev.id] or {}
-				wanted[ev.type][ev.id][ev.time] = (wanted[ev.type][ev.id][ev.time] or 0) + 1
+		local newSelection = { events = {} }
+		
+		local wantedKeyframes = {}
+		local wantedMarkers = {}
+		for _, ev in ipairs(events) do
+			if eventKinds[ev] == 'keyframe' then
+				wantedKeyframes[ev.type] = wantedKeyframes[ev.type] or {}
+				wantedKeyframes[ev.type][ev.id] = wantedKeyframes[ev.type][ev.id] or {}
+				wantedKeyframes[ev.type][ev.id][ev.time] = (wantedKeyframes[ev.type][ev.id][ev.time] or 0) + 1
+			else
+				wantedMarkers[ev.type] = wantedMarkers[ev.type] or {}
+				wantedMarkers[ev.type][ev.time] = (wantedMarkers[ev.type][ev.time] or 0) + 1
 			end
-			for eType, byId in pairs(wanted) do
-				for eId, byTime in pairs(byId) do
-					self:resetDecoEvents(eType, eId)
-					
-					local deco = self.decos[eType .. ":" .. eId]
-					if deco then
-						for _, dEv in ipairs(deco.events) do
-							local count = byTime[dEv.time]
-							if count and count > 0 then
-								newSelection.events[dEv] = true
-								byTime[dEv.time] = count - 1
-							end
+		end
+		
+		for eType, byId in pairs(wantedKeyframes) do
+			for eId, byTime in pairs(byId) do
+				self:resetDecoEvents(eType, eId)
+				
+				local deco = self.decos[eType .. ":" .. eId]
+				if deco then
+					for _, dEv in ipairs(deco.events) do
+						local count = byTime[dEv.time]
+						if count and count > 0 then
+							newSelection.events[dEv] = 'keyframe'
+							byTime[dEv.time] = count - 1
 						end
 					end
 				end
 			end
-		elseif pasteType == 'marker' then
+		end
+		
+		if next(wantedMarkers) then
 			self:resetMarkers()
 			
-			local wanted = {}
-			for _, ev in ipairs(events) do
-				wanted[ev.type] = wanted[ev.type] or {}
-				wanted[ev.type][ev.time] = (wanted[ev.type][ev.time] or 0) + 1
-			end
 			for _, m in ipairs(self.markers) do
-				local byTime = wanted[m.type]
+				local byTime = wantedMarkers[m.type]
 				local count = byTime and byTime[m.time]
 				if count and count > 0 then
-					newSelection.events[m] = true
+					newSelection.events[m] = 'marker'
 					byTime[m.time] = count - 1
 				end
 			end
 		end
+		
 		self.selectedEvents = newSelection
 	end,'paste selected','ctrl','v')
 	
@@ -608,7 +801,7 @@ function st:commitDragTimes()
 end
 
 function st:setEditInfo()
-	local list = self:getEList(self.selectedEvents)
+	local list = self:getEList(self.selectedEvents, 'keyframe')
 	local endBeat = -math.huge
 	for _, ev in ipairs(list) do
 		local evEnd = ev.time + (ev.duration or 0)
@@ -633,15 +826,18 @@ function st:setEditInfo()
 	end
 	
 	local editProps = decoEditProps[kind] or decoEditProps.deco
-	
+	print(kind)
 	self.editInfo = {
 		multiEdit = (#list > 1),
 		startMouseX = mouse.rx + self.pan[1],
 		startMouseY = mouse.ry + self.pan[2],
+		startMouseRawX = mouse.rx,
+		startMouseRawY = mouse.ry,
 		decoRef = deco,
 		eventRef = eventRef,
 		editProps = editProps,
-		shuvState = self.editInfo.shuvState or shuv.usePalette
+		shuvState = self.editInfo.shuvState or shuv.usePalette,
+		is3D = (kind == 'camera3d') or (kind == 'deco3d')
 	}
 	
 	if deco then
@@ -793,17 +989,17 @@ function st:checkKeybinds()
 	for i, v in ipairs(self.keybinds) do
 		if v.k1 and v.k2 and v.k3 then
 			if maininput:down(v.k1) and maininput:down(v.k2) and maininput:pressed(v.k3) then
-				log('pressed keybind ' .. v.name,'editor')
+				log('pressed keybind ' .. v.name,'keditor')
 				v.func()
 			end
 		elseif v.k1 and v.k2 then
 			if maininput:down(v.k1) and maininput:pressed(v.k2) then
-				log('pressed keybind ' .. v.name,'editor')
+				log('pressed keybind ' .. v.name,'keditor')
 				v.func()
 			end
 		else
 			if maininput:pressed(v.k1) then
-				log('pressed keybind ' .. v.name,'editor')
+				log('pressed keybind ' .. v.name,'keditor')
 				v.func()
 			end
 		end
@@ -841,9 +1037,6 @@ function st:getBeatStep()
 end
 
 function st:getAngleSnapValue()
-	return 16
-end
-function st:getAngleSnapValue()
 	return 360/16
 end
 
@@ -865,23 +1058,16 @@ function st:deleteSelectedEvents()
 	end
 end
 function st:clearSelection()
-	self.selectedEvents = { type = nil, events = {} }
+	self.selectedEvents = { events = {} }
 end
 function st:selectSingle(kind, obj)
-	self.selectedEvents = { type = kind, events = { [obj] = true } }
+	self.selectedEvents = { events = { [obj] = kind } }
 end
-function st:addSelect(kind, obj) -- im not actually sure why i seperated markers and keyframes in select
-	if self.selectedEvents.type == nil then
-		self.selectedEvents.type = kind
-	end
-	if kind ~= self.selectedEvents.type then
-		print('mismatch selection kinds')
-		return
-	end
-	self.selectedEvents.events[obj] = true
+function st:addSelect(kind, obj)
+	self.selectedEvents.events[obj] = kind
 end
 function st:isSelected(kind, obj)
-	return self.selectedEvents.type == kind and self.selectedEvents.events[obj] == true
+	return self.selectedEvents.events[obj] == kind
 end
 function st:getSelectedFromGroup(kind, group)
 	for _, ev in ipairs(group) do
@@ -892,20 +1078,24 @@ function st:getSelectedFromGroup(kind, group)
 	return nil
 end
 function st:getFirstOfEList(list)
-	local obj = next(list.events)
-	return obj, list.type
+	local obj, kind = next(list.events)
+	return obj, kind
 end
-function st:getEList(list)
+function st:getEList(list, kind)
 	local out = {}
-	for obj in pairs(list.events) do
-		out[#out + 1] = obj
+	for obj, k in pairs(list.events) do
+		if not kind or k == kind then
+			out[#out + 1] = obj
+		end
 	end
 	return out
 end
-function st:getEListCount(list)
+function st:getEListCount(list, kind)
 	local count = 0
-	for _ in pairs(list.events) do
-		count = count + 1
+	for obj, k in pairs(list.events) do
+		if not kind or k == kind then
+			count = count + 1
+		end
 	end
 	return count
 end
@@ -1039,6 +1229,115 @@ function st:updateAfts()
 	end
 end
 
+function st:resolveVarTarget(var)
+	local varSplit = self.easeVarSplitCache[var]
+	if varSplit == nil then
+		local parts = {}
+		local valid = true
+		for v in string.gmatch(var, "([^.]+)") do
+			if tonumber(v) then
+				valid = false
+				break
+			end
+			table.insert(parts, v)
+		end
+		if not valid or #parts < 2 then
+			varSplit = false
+		else
+			varSplit = parts
+		end
+		self.easeVarSplitCache[var] = varSplit
+	end
+	
+	if not varSplit then
+		return nil, nil
+	end
+	
+	local target = self
+	for i = 1, #varSplit - 1 do
+		local key = varSplit[i]
+		if type(target) ~= 'table' or target[key] == nil then
+			return nil, nil
+		end
+		target = target[key]
+	end
+	local field = varSplit[#varSplit]
+	if type(target) ~= 'table' then
+		return nil, nil
+	end
+	return target, field
+end
+
+function st:updateEases()
+	local easeMarkers = self.markersByType.ease
+	if not easeMarkers then return end
+	
+	local instances = {}
+	for _, e in ipairs(easeMarkers) do
+		if e.mode ~= 'setRandom' and e.mode ~= 'addRandom' then
+			local repeats = e.repeats or 0
+			local repeatDelay = e.repeatDelay or 1
+			for r = 0, repeats do
+				local t = e.time + r * repeatDelay
+				if t <= self.editorBeat then
+					table.insert(instances, {
+						time = t, order = e.order, var = e.var, mode = e.mode,
+						start = e.start, value = e.value,
+						duration = e.duration, ease = e.ease,
+					})
+				end
+			end
+		end
+	end
+	table.sort(instances, eventSort)
+	
+	local groups, groupOrder = {}, {}
+	for _, inst in ipairs(instances) do
+		local target, field = self:resolveVarTarget(inst.var)
+		if target and type(target[field]) == 'number' then
+			if not groups[inst.var] then
+				groups[inst.var] = { target = target, field = field, events = {} }
+				table.insert(groupOrder, inst.var)
+			end
+			table.insert(groups[inst.var].events, inst)
+		end
+	end
+	
+	for _, key in ipairs(groupOrder) do
+		local group = groups[key]
+		local target, field = group.target, group.field
+		
+		target[field] = resolveEasedValue(group.events, function(e) return e.value end, target[field] or 0, 
+			self.editorBeat, {allowAdd = true, startOverride = function(e, base) 
+				return e.start or base 
+			end})
+	end
+end
+
+function st:updateSetBooleans()
+	local boolMarkers = self.markersByType.setBoolean
+	if not boolMarkers then return end
+	
+	local latestByVar = {}
+	for _, m in ipairs(boolMarkers) do
+		if m.var and m.time <= self.editorBeat then
+			local existing = latestByVar[m.var]
+			if not existing
+				or m.time > existing.time
+				or (m.time == existing.time and (m.order or 0) >= (existing.order or 0)) then
+				latestByVar[m.var] = m
+			end
+		end
+	end
+	
+	for var, m in pairs(latestByVar) do
+		local target, field = self:resolveVarTarget(var)
+		if target then
+			target[field] = m.enable
+		end
+	end
+end
+
 function st:updatePlayer()
 	if not self.p then
 		return
@@ -1046,20 +1345,11 @@ function st:updatePlayer()
 	local numPaddles = #self.p.paddles
 	
 	local paddleEvents = {}
-	local easeEvents = {}
 	local paddleMarkers = self.markersByType.paddles
 	if paddleMarkers then
 		for _, m in ipairs(paddleMarkers) do
 			if m.time <= self.editorBeat then
 				table.insert(paddleEvents, m)
-			end
-		end
-	end
-	local easeMarkers = self.markersByType.ease
-	if easeMarkers then
-		for _, m in ipairs(easeMarkers) do
-			if m.time <= self.editorBeat and m.var:sub(1,2) == 'p.' then
-				table.insert(easeEvents, m)
 			end
 		end
 	end
@@ -1093,20 +1383,7 @@ function st:updatePlayer()
 			end
 			
 			if #proppaddleEvents > 0 then
-				local base = paddle[prop.field] or 0
-				for j = 1, #proppaddleEvents - 1 do
-					base = proppaddleEvents[j][prop.key]
-				end
-
-				local e = proppaddleEvents[#proppaddleEvents]
-				local target = e[prop.key]
-				local ease = e.ease or 'linear'
-				local duration = e.duration or 0
-				local t = (duration > 0)
-					and helpers.clamp((self.editorBeat - e.time) / duration, 0, 1)
-					or 1
-
-				paddle[prop.field] = helpers.interpolate(base, target, t, ease)
+				paddle[prop.field] = resolveEasedValue(proppaddleEvents, function(e) return e[prop.key] end, paddle[prop.field] or 0, self.editorBeat)
 			end
 		end
 		
@@ -1117,119 +1394,8 @@ function st:updatePlayer()
 			end
 		end
 		if #heightpaddleEvents > 0 then
-			local base = paddle.paddleWidth or 0
-			for j = 1, #heightpaddleEvents - 1 do
-				base = heightpaddleEvents[j].newHeight
-			end
-			
-			local e = heightpaddleEvents[#heightpaddleEvents]
-			local target = e.newHeight
-			local ease = e.ease or 'linear'
-			local duration = e.duration or 0
-			local t = (duration > 0)
-				and helpers.clamp((self.editorBeat - e.time) / duration, 0, 1)
-				or 1
-			
-			paddle.paddleWidth = helpers.interpolate(base, target, t, ease)
+			paddle.paddleWidth = resolveEasedValue(heightpaddleEvents, function(e) return e.newHeight end, paddle.paddleWidth or 0, self.editorBeat)
 		end
-	end
-	
-	local function resolveEaseTarget(var)
-		local varSplit = self.easeVarSplitCache[var]
-		if varSplit == nil then
-			local parts = {}
-			local valid = true
-			for v in string.gmatch(var, "([^.]+)") do
-				if tonumber(v) then
-					valid = false
-					break
-				end
-				table.insert(parts, v)
-			end
-			if not valid or #parts < 2 then
-				varSplit = false
-			else
-				varSplit = parts
-			end
-			self.easeVarSplitCache[var] = varSplit
-		end
-		
-		if not varSplit then
-			return nil, nil
-		end
-		
-		local target = self
-		for i = 1, #varSplit - 1 do
-			local key = varSplit[i]
-			if type(target) ~= 'table' or target[key] == nil then
-				return nil, nil
-			end
-			target = target[key]
-		end
-		local field = varSplit[#varSplit]
-		if type(target) ~= 'table' or type(target[field]) ~= 'number' then
-			return nil, nil
-		end
-		return target, field
-	end
-	
-	local instances = {}
-	for _, e in ipairs(easeEvents) do
-		if e.mode ~= 'setRandom' and e.mode ~= 'addRandom' then
-			local repeats = e.repeats or 0
-			local repeatDelay = e.repeatDelay or 1
-			for r = 0, repeats do
-				local t = e.time + r * repeatDelay
-				if t <= self.editorBeat then
-					table.insert(instances, {
-						time = t, order = e.order, var = e.var, mode = e.mode,
-						start = e.start, value = e.value,
-						duration = e.duration, ease = e.ease,
-					})
-				end
-			end
-		end
-	end
-	table.sort(instances, function(a, b)
-		if a.time == b.time then
-			return (a.order or 0) < (b.order or 0)
-		end
-		return a.time < b.time
-	end)
-	
-	local groups, groupOrder = {}, {}
-	for _, inst in ipairs(instances) do
-		local target, field = resolveEaseTarget(inst.var)
-		if target then
-			if not groups[inst.var] then
-				groups[inst.var] = { target = target, field = field, events = {} }
-				table.insert(groupOrder, inst.var)
-			end
-			table.insert(groups[inst.var].events, inst)
-		end
-	end
-	
-	for _, key in ipairs(groupOrder) do
-		local group = groups[key]
-		local events = group.events
-		local target, field = group.target, group.field
-		
-		local base = target[field] or 0
-		for j = 1, #events - 1 do
-			local ev = events[j]
-			base = (ev.mode == 'add') and (base + (ev.value or 0)) or (ev.value or base)
-		end
-		
-		local e = events[#events]
-		local startVal = e.start or base
-		local endVal = (e.mode == 'add') and (startVal + (e.value or 0)) or (e.value or startVal)
-		local ease = e.ease or 'linear'
-		local duration = e.duration or 0
-		local t = (duration > 0)
-			and helpers.clamp((self.editorBeat - e.time) / duration, 0, 1)
-			or 1
-		
-		target[field] = helpers.interpolate(startVal, endVal, t, ease)
 	end
 	
 	self.p._actualX, self.p._actualY = self.p.x, self.p.y
@@ -1259,20 +1425,7 @@ function st:updateColorPalette()
 				end
 				
 				if #propEvents > 0 then
-					local base = 0
-					for i = 1, #propEvents - 1 do
-						base = propEvents[i][channel]
-					end
-					
-					local e = propEvents[#propEvents]
-					local target = e[channel]
-					local ease = e.ease or 'linear'
-					local duration = e.duration or 0
-					local t = (duration > 0)
-						and helpers.clamp((self.editorBeat - e.time) / duration, 0, 1)
-						or 1
-					
-					shuv.pal[idx][channel] = helpers.interpolate(base, target, t, ease)
+					shuv.pal[idx][channel] = resolveEasedValue(propEvents, function(e) return e[channel] end, 0, self.editorBeat)
 				end
 			end
 		end
@@ -1298,12 +1451,15 @@ function st:rebuildDecoObjects()
 end
 
 st:setUpdate(function(self, dt)
+	self.p.x = 300
+	self.p.y = 180
+	
 	self:updateColorPalette()
 	self:setBGColor()
 	self:setOutline()
+	self:updateEases()
+	self:updateSetBooleans()
 	
-	self.p.x = 300
-	self.p.y = 180
 	self:updatePlayer()
 	self.p.x = self.p._actualX - self.pan[1]
 	self.p.y = self.p._actualY - self.pan[2]
@@ -1918,11 +2074,11 @@ function st:imgui()
 				end
 				
 				local shiftHeld = maininput:down("shift")
-				local canAdd = shiftHeld and self.selectedEvents.type == 'keyframe' and self:getEListCount(self.selectedEvents) > 0
+				local canAdd = shiftHeld and self:getEListCount(self.selectedEvents) > 0
 				
 				if #boxed > 0 then
 					if not canAdd then
-						self.selectedEvents = { type = 'keyframe', events = {} }
+						self.selectedEvents = { events = {} }
 					end
 					for _, ev in ipairs(boxed) do
 						self:addSelect('keyframe', ev)
@@ -1946,7 +2102,7 @@ function st:imgui()
 				if io.KeyCtrl then
 					self.beatSize = math.max(10, beatSize + wheel * 10)
 				elseif io.KeyShift then
-					self.timelineRowScroll = math.max(0, math.min(#rows - visible_rows, rowScroll - wheel))
+					self.timelineRowScroll = helpers.clamp(rowScroll - wheel, 0, #rows - visible_rows + 2)
 				else
 					self.timelineScroll = math.max(-8, scroll - wheel * 0.5 * (30 / beatSize)^0.75)
 				end
@@ -2002,6 +2158,7 @@ function st:imgui()
 			if imgui.BeginTabItem("Viewport") then
 				imgui.SeparatorText("General")
 				shuv.usePalette = helpers.InputBool("Use Palette", shuv.usePalette or false)
+				self.showOtherDecosWhileEditing = helpers.InputBool("Show Other Decos When Editing", self.showOtherDecosWhileEditing or false)
 				self.gridScale = helpers.InputInt("Grid Size", self.gridScale)
 				
 				imgui.SeparatorText("Layers")
@@ -2382,29 +2539,19 @@ function st:updateDecos()
 			end
 			if #propEvents == 0 then goto nextprop end
 			
-			local base = deco._baseProps[p]
-			for i = 1, #propEvents - 1 do
-				local e = propEvents[i]
-				base = ((e.mode == "add" and type(e[p]) == "number") and not instantProps[p]) and (base + e[p]) or e[p]
-			end
+			local isInstantProp = instantProps[p]
+			local firstEvent = v.events[1]
 			
-			local e = propEvents[#propEvents]
-			local target = ((e.mode == "add" and type(e[p]) == "number") and not instantProps[p]) and (base + e[p]) or e[p]
-			local isFirstEvent = (e == v.events[1])
-			
-			local ease = e.ease or "linear"
-			local duration = e.duration or 0
-			local t = (duration > 0 and not instantProps[p] and not isFirstEvent)
-				and helpers.clamp((self.editorBeat - e.time) / duration, 0, 1)
-				or 1
-			
-			local newValue = (type(target) == "number" and not instantProps[p]) and helpers.interpolate(base, target, t, ease) or target
+			local newValue = resolveEasedValue(propEvents, function(e) return e[p] end,
+				deco._baseProps[p], self.editorBeat, {allowAdd = not isInstantProp, instant = function(e)
+					return isInstantProp or (e == firstEvent)
+				end})
 			
 			if p == "sprite" and newValue ~= deco.sprite then
 				spriteChanged = true
 			end
 			
-			deco._spawnTime = isFirstOfID and e.time or deco._spawnTime or 0
+			deco._spawnTime = isFirstOfID and propEvents[#propEvents].time or deco._spawnTime or 0
 			deco[p] = newValue
 			if p == "hide" then
 				deco._trueHide = newValue
@@ -2484,6 +2631,20 @@ function st:drawGrid(bgc)
 	end
 end
 
+function st:drawOtherDecos(exclude)
+	if not self.showOtherDecosWhileEditing then return end
+	love.graphics.setColor(1, 1, 1, 0.5)
+	for _, v in pairs(self.renderDecos) do
+		if not v.hide and v ~= exclude and v.kind ~= 'deco3d' and v.kind ~= 'camera3d' and (not v.parentid or v.parentid == '') then
+			v.originalX, v.originalY = v.x, v.y
+			v.x, v.y = v.originalX - self.pan[1], v.originalY - self.pan[2]
+			v:drawSprite()
+			v.x, v.y = v.originalX, v.originalY
+		end
+	end
+	love.graphics.setColor(1, 1, 1, 1)
+end
+
 st:setFgDraw(function(self) -- this is a mess
 	-- i think the grid and bg is no longer a mess
 	local palette = shuv.usePalette and shuv.pal or shuv.paldefault
@@ -2548,14 +2709,249 @@ st:setFgDraw(function(self) -- this is a mess
 					v.x, v.y = v.originalX, v.originalY
 				end
 			end
-		elseif self.editMode ~= "none" and self.editInfo.decoRef and (self.editInfo.decoRef.kind == 'deco3d' or self.editInfo.decoRef.kind == 'camera3d') then
+		elseif self.editMode ~= "none" and self.editInfo.is3D then
 			local info = self.editInfo
 			local er = info.eventRef
 			local dr = info.decoRef
 			local k = er.type
 			
+			-- so much math :(
 			if k == 'deco3d' then
+				local cameraObj = self.vfx.camera3d[dr.camera]
+				if not cameraObj then
+					error("Camera " .. dr.camera .. " doesn't exist")
+				end
+				color()
+				local cCanvas = love.graphics.getCanvas()
+				love.graphics.setCanvas({cCanvas, depth = true})
+
+				local prevMode,prevAlpha = love.graphics.getBlendMode()
+				love.graphics.setBlendMode('alpha','premultiplied')
+
+				g3d.start()
 				
+				love.graphics.clear(false,false,true)
+				
+				cameraObj.camera.fov = cameraObj.fov
+				cameraObj.camera.aspectRatio = cameraObj.aspectRatio
+
+				g3d.camera.setCurrent(cameraObj.camera)
+				local tx,ty,tz = cameraObj.tx,cameraObj.ty,cameraObj.tz
+				cameraObj.camera:lookAt(cameraObj.cx,cameraObj.cy,cameraObj.cz,tx,ty,tz)
+				
+				if self.editMode == "move" then
+					local cam = cameraObj.camera
+					local width, height = 600, 360
+					local mx, my = mouse.rx, mouse.ry
+					local smx, smy = self.editInfo.startMouseRawX, self.editInfo.startMouseRawY
+					
+					-- how many screen px a unit move along ax, ay, az produces
+					-- at the deco's start position, then project the mouse
+					-- delta onto that to solve for world space t
+					local function worldDelta(ax, ay, az)
+						local ox, oy, oz = self.editInfo.startX, self.editInfo.startY, self.editInfo.startZ
+						local sx0, sy0 = worldToScreen(ox, oy, oz, cam, width, height)
+						local sx1, sy1 = worldToScreen(ox + ax, oy + ay, oz + az, cam, width, height)
+						if not sx0 or not sx1 then return 0 end
+						local dsx, dsy = sx1 - sx0, sy1 - sy0
+						local denom = dsx * dsx + dsy * dsy
+						if denom < 0.000001 then return 0 end
+						local mdx, mdy = mx - smx, my - smy
+						return (mdx * dsx + mdy * dsy) / denom
+					end
+					
+					if self.lockedAxis == "x" then
+						dr.x = self.editInfo.startX + worldDelta(1, 0, 0)
+						dr.y = self.editInfo.startY
+						dr.z = self.editInfo.startZ
+					elseif self.lockedAxis == "y" then
+						dr.x = self.editInfo.startX
+						dr.y = self.editInfo.startY + worldDelta(0, 1, 0)
+						dr.z = self.editInfo.startZ
+					elseif self.lockedAxis == "z" then
+						dr.x = self.editInfo.startX
+						dr.y = self.editInfo.startY
+						dr.z = self.editInfo.startZ + worldDelta(0, 0, 1)
+					else
+						-- no axis take plane haha planes vroom... what sounds do planes make
+						local dir = cam.direction or 0
+						local pitch = cam.pitch or 0
+						local fx = math.cos(pitch) * math.cos(dir)
+						local fy = math.cos(pitch) * math.sin(dir)
+						local fz = math.sin(pitch)
+						-- this seems a bit iffy but idgaf
+						
+						-- right = forward x world up
+						local rx, ry, rz = fy, -fx, 0
+						local rlen = math.sqrt(rx*rx + ry*ry + rz*rz)
+						if rlen < 0.000001 then rx, ry, rz, rlen = 1, 0, 0, 1 end
+						rx, ry, rz = rx/rlen, ry/rlen, rz/rlen
+						
+						-- up = right x forward
+						local ux = ry*fz - rz*fy
+						local uy = rz*fx - rx*fz
+						local uz = rx*fy - ry*fx
+						local ulen = math.sqrt(ux*ux + uy*uy + uz*uz)
+						if ulen < 0.000001 then ux, uy, uz, ulen = 0, 0, 1, 1 end
+						ux, uy, uz = ux/ulen, uy/ulen, uz/ulen
+						
+						local tr = worldDelta(rx, ry, rz)
+						local tu = worldDelta(ux, uy, uz)
+						
+						dr.x = self.editInfo.startX + rx * tr + ux * tu
+						dr.y = self.editInfo.startY + ry * tr + uy * tu
+						dr.z = self.editInfo.startZ + rz * tr + uz * tu
+					end
+					
+					self.editInfo.x = dr.x
+					self.editInfo.y = dr.y
+					self.editInfo.z = dr.z
+				elseif self.editMode == "scale" then
+					local cam = cameraObj.camera
+					local width, height = 600, 360
+					local px, py = worldToScreen(dr.x, dr.y, dr.z, cam, width, height)
+					
+					if px then
+						local smx, smy = self.editInfo.startMouseRawX, self.editInfo.startMouseRawY
+						local mx, my = mouse.rx, mouse.ry
+						
+						local startDist = math.sqrt((smx - px)^2 + (smy - py)^2)
+						local curDist = math.sqrt((mx - px)^2 + (my - py)^2)
+						local factor = (startDist > 0.0001) and (curDist / startDist) or 1
+						
+						if not maininput:down('ctrl') then
+							factor = math.floor(factor * 20 + 0.5) / 20
+						end
+						
+						if self.lockedAxis == "x" then
+							dr.sx = (self.editInfo.startSX or 1) * factor
+							dr.sy = self.editInfo.startSY
+							dr.sz = self.editInfo.startSZ
+						elseif self.lockedAxis == "y" then
+							dr.sx = self.editInfo.startSX
+							dr.sy = (self.editInfo.startSY or 1) * factor
+							dr.sz = self.editInfo.startSZ
+						elseif self.lockedAxis == "z" then
+							dr.sx = self.editInfo.startSX
+							dr.sy = self.editInfo.startSY
+							dr.sz = (self.editInfo.startSZ or 1) * factor
+						else
+							dr.sx = (self.editInfo.startSX or 1) * factor
+							dr.sy = (self.editInfo.startSY or 1) * factor
+							dr.sz = (self.editInfo.startSZ or 1) * factor
+						end
+						
+						self.editInfo.sx = dr.sx
+						self.editInfo.sy = dr.sy
+						self.editInfo.sz = dr.sz
+					end
+				elseif self.editMode == "rotate" then
+					local cam = cameraObj.camera
+					local width, height = project.res.x, project.res.y
+					local px, py = worldToScreen(dr.x, dr.y, dr.z, cam, width, height)
+					
+					if px then
+						local smx, smy = self.editInfo.startMouseRawX, self.editInfo.startMouseRawY
+						local mx, my = mouse.rx, mouse.ry
+						
+						local angle0 = math.atan2(smy - py, smx - px)
+						local angle1 = math.atan2(my - py, mx - px)
+						local deltaDeg = math.deg(angle1 - angle0)
+						
+						if maininput:down('shift') then
+							local snap = math.rad(15)
+							deltaDeg = math.floor(deltaDeg / snap + 0.5) * snap
+						end
+						
+						if self.lockedAxis == "x" then
+							dr.rx = (self.editInfo.startRX or 0) + deltaDeg
+							dr.ry = self.editInfo.startRY
+							dr.rz = self.editInfo.startRZ
+						elseif self.lockedAxis == "y" then
+							dr.rx = self.editInfo.startRX
+							dr.ry = (self.editInfo.startRY or 0) + deltaDeg
+							dr.rz = self.editInfo.startRZ
+						else
+							dr.rx = self.editInfo.startRX
+							dr.ry = self.editInfo.startRY
+							dr.rz = (self.editInfo.startRZ or 0) + deltaDeg
+						end
+						
+						self.editInfo.rx = dr.rx
+						self.editInfo.ry = dr.ry
+						self.editInfo.rz = dr.rz
+					end
+				end
+				
+				--draw the object
+				dr:draw()
+				
+				if self.showOtherDecosWhileEditing then
+					love.graphics.setColor(1, 1, 1, 0.5)
+					for id in pairs(cameraObj.models) do
+						local otherDeco = self.decoObjects["deco3d:" .. id]
+						if otherDeco and otherDeco ~= dr then
+							otherDeco:draw()
+						end
+					end
+					love.graphics.setColor(1, 1, 1, 1)
+				end
+				
+				g3d.stop()
+				color()
+				love.graphics.setBlendMode(prevMode,prevAlpha)
+				
+				if self.editMode == "move" and self.lockedAxis ~= "none" then
+					local axisColor = {1, 1, 1, 1}
+					local ax, ay, az = 0, 0, 0
+					if self.lockedAxis == "x" then
+						axisColor = {1, 0.25, 0.25, 1}
+						ax = 1
+					elseif self.lockedAxis == "y" then
+						axisColor = {0.25, 1, 0.25, 1}
+						ay = 1
+					elseif self.lockedAxis == "z" then
+						axisColor = {0.35, 0.55, 1, 1}
+						az = 1
+					end
+					
+					local x1, y1, x2, y2 = getScreenAxisLine(dr.x, dr.y, dr.z, ax, ay, az, cameraObj.camera, project.res.x, project.res.y)
+					
+					if x1 then
+						love.graphics.setColor(axisColor)
+						love.graphics.setLineWidth(1)
+						love.graphics.line(x1, y1, x2, y2)
+					end
+				elseif (self.editMode == "scale" or self.editMode == "rotate") and self.lockedAxis ~= 'none' then
+					local axisColor = {1, 1, 1, 1}
+					local ax, ay, az = 0, 0, 0
+					if self.lockedAxis == "x" then
+						axisColor = {1, 0.25, 0.25, 1}
+						ax = 1
+					elseif self.lockedAxis == "y" then
+						axisColor = {0.25, 1, 0.25, 1}
+						ay = 1
+					elseif self.lockedAxis == "z" then
+						axisColor = {0.35, 0.55, 1, 1}
+						az = 1
+					end
+					
+					ax, ay, az = rotateVector({x = ax, y = ay, z = az}, dr.rx, dr.ry, dr.rz)
+					local x1, y1, x2, y2 = getScreenAxisLine(dr.x, dr.y, dr.z, ax, ay, az, cameraObj.camera, project.res.x, project.res.y)
+					
+					if x1 then
+						love.graphics.setColor(axisColor)
+						love.graphics.setLineWidth(1)
+						love.graphics.line(x1, y1, x2, y2)
+					end
+				end
+				local cx, cy = worldToScreen(dr.x, dr.y, dr.z, cameraObj.camera, 600, 360)
+				if cx then
+					love.graphics.setColor(0.5, 1, 0.5, 1)
+					love.graphics.circle('line', cx, cy, 3)
+				end
+				
+				love.graphics.setColor(1, 1, 1, 1)
 			else
 				--print(self.vfx.camera3d[er.id])
 				if self.vfx.camera3d[er.id] then
@@ -2564,6 +2960,7 @@ st:setFgDraw(function(self) -- this is a mess
 			end
 		elseif self.editMode == "move" then
 			local deco = self.editInfo.decoRef
+			self:drawOtherDecos(deco)
 				deco.originalX, deco.originalY = deco.x, deco.y
 				deco.x, deco.y = deco.originalX - self.pan[1], deco.originalY - self.pan[2]
 			local gridScale = self.gridScale
@@ -2601,6 +2998,7 @@ st:setFgDraw(function(self) -- this is a mess
 				deco.x, deco.y = deco.originalX, deco.originalY
 		elseif self.editMode == "scale" then
 			local deco = self.editInfo.decoRef
+			self:drawOtherDecos(deco)
 			deco.originalX, deco.originalY = deco.x, deco.y
 			deco.x, deco.y = deco.originalX - self.pan[1], deco.originalY - self.pan[2]
 			
@@ -2671,6 +3069,7 @@ st:setFgDraw(function(self) -- this is a mess
 			deco.x, deco.y = deco.originalX, deco.originalY
 		elseif self.editMode == "rotate" then
 			local deco = self.editInfo.decoRef
+			self:drawOtherDecos(deco) -- i really need to break up this like 200+ line if statement
 			deco.originalX, deco.originalY = deco.x, deco.y
 			deco.x, deco.y = deco.originalX - self.pan[1], deco.originalY - self.pan[2]
 			local pivotX, pivotY = self.editInfo.startX - self.pan[1], self.editInfo.startY - self.pan[2]
@@ -2715,12 +3114,12 @@ st:setFgDraw(function(self) -- this is a mess
 	love.graphics.setLineWidth(2)
 	love.graphics.rectangle("line", -self.pan[1] - 1, -self.pan[2] - 1, 602, 362)
 	
-	if not self.editInfo.startZ then
-		if self.editMode == 'move' and self.editInfo.startX then
+	if not self.editInfo.is3D then
+		if self.editMode == 'move' then
 			local x1, y1 = self.editInfo.startX - (self.lockedAxis == "x" and 600 or 0), self.editInfo.startY - (self.lockedAxis == "y" and 600 or 0)
 			local x2, y2 = self.editInfo.startX + (self.lockedAxis == "x" and 600 or 0), self.editInfo.startY + (self.lockedAxis == "y" and 600 or 0)
 			love.graphics.line(x1-self.pan[1],y1-self.pan[2],x2-self.pan[1],y2-self.pan[2])
-		elseif self.editMode == 'scale' and self.editInfo.startX then
+		elseif self.editMode == 'scale' then
 			local rot = math.rad(self.editInfo.startR or 0)
 			local xdirX, xdirY = math.cos(rot) * 600, math.sin(rot) * 600
 			local ydirX, ydirY = -math.sin(rot) * 600, math.cos(rot) * 600
