@@ -319,6 +319,12 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	self.rowsDirty = true
 	
 	self.easeVarSplitCache = {}
+	self.failedSprites = {}
+	self.failedAssets = {} -- 'model:name' / 'texture:name' -> error string
+	self.problemList = {}
+	self.problemSeen = {}
+	self.errorHistory = {}
+	self.showProblems = true
 	
 	self.markers = {}
 	self.draggingMarker = nil
@@ -912,9 +918,7 @@ function st:resetDecos()
 		index = index + 1
 		
 		if self.decoTypes[v.type] then --v.type == "deco" or v.type == "textdeco" then
-			if Event.onLoad[v.type](v) then
-				self.drawDecos = false
-			end
+			self:runDecoOnLoad(v)
 			if v.type == "textdeco" then
 				v.text = v.textString
 			end
@@ -929,6 +933,7 @@ function st:resetDecos()
 	end
 	
 	self.rowsDirty = true
+	self.definedDecoIds = nil
 end
 
 function st:resetDecoEvents(decoType, decoId)
@@ -938,9 +943,7 @@ function st:resetDecoEvents(decoType, decoId)
 	
 	for i, v in ipairs(self.level.events) do
 		if v.type == decoType and v.id == decoId then
-			if Event.onLoad[v.type](v) then
-				self.drawDecos = false
-			end
+			self:runDecoOnLoad(v)
 			if v.type == "textdeco" then
 				v.text = v.textString
 			end
@@ -953,6 +956,7 @@ function st:resetDecoEvents(decoType, decoId)
 	if #events == 0 then
 		self.decos[key] = nil
 		self.rowsDirty = true
+		self.definedDecoIds = nil
 		return
 	end
 	
@@ -962,9 +966,13 @@ function st:resetDecoEvents(decoType, decoId)
 	self.decos[key].events = events
 	
 	self.rowsDirty = true
+	self.definedDecoIds = nil
 end
 
 function st:resetLoads()
+	self.failedSprites = {}
+	self.failedAssets = {}
+	self.drawDecos = true
 	self.gm:resetLevel() -- need to see if anything gets messed up, i dont think it should but you never know
 	self:resetMarkers()
 	self:resetDecos()
@@ -1105,16 +1113,67 @@ function st:clearMultiselectVars()
 end
 
 function st:playbackError(message)
-	if not self.errorDialogue then
-		log('Playback error: '..message,'error')
-		self.errorDialogue = true		
-		self.errorMessage = message
-		self.errorHeader = "An error has occured during playback."
-		self.isPlaying = false
-		if self.source then
-			self.source:stop()
+	self:logError('Playback', message)
+end
+
+function st:clearProblems()
+	self.problemList = {}
+	self.problemSeen = {}
+end
+
+function st:reportProblem(category, key, message, ev, kind)
+	local id = category .. '|' .. tostring(key)
+	if self.problemSeen[id] then return end
+	self.problemSeen[id] = true
+	table.insert(self.problemList, { category = category, message = message, ev = ev, kind = kind })
+end
+
+function st:logError(category, message)
+	message = tostring(message)
+	local hist = self.errorHistory
+	for i = #hist, math.max(1, #hist - 20), -1 do
+		local h = hist[i]
+		if h.category == category and h.message == message then
+			h.count = h.count + 1
+			h.beat = self.editorBeat
+			return
 		end
 	end
+	table.insert(hist, { category = category, message = message, count = 1, beat = self.editorBeat })
+	if #hist > 100 then table.remove(hist, 1) end
+	log(category .. ': ' .. message, 'error')
+end
+
+function st:getDefinedDecoIds()
+	if self.definedDecoIds then return self.definedDecoIds end
+	local set = { ['@player'] = true }
+	for _, d in pairs(self.decos) do
+		if d.kind == 'deco' or d.kind == 'textdeco' then
+			local ok = pcall(helpers.targetDecosUsingSyntaxicID, function(id) set[id] = true end, d.id)
+			if not ok and d.id then set[d.id] = true end
+		end
+	end
+	self.definedDecoIds = set
+	return set
+end
+
+function st:runDecoOnLoad(v)
+	local ok, err = pcall(Event.onLoad[v.type], v)
+	if not ok then self:logError('Load', tostring(err)) end
+end
+
+function st:describeVarProblem(var)
+	if type(var) ~= 'string' or var == '' then
+		return "no variable set"
+	end
+	local target, field = self:resolveVarTarget(var)
+	if not target then
+		return "path doesn't resolve (no numeric parts, and every parent must exist)"
+	end
+	if target[field] == nil then
+		return "'" .. field .. "' doesn't exist"
+	end
+	return "'" .. field .. "' is a " .. type(target[field]) .. ", expected a number"
 end
 
 function st:getRetimeOffset(beat)
@@ -1241,7 +1300,7 @@ function st:resolveVarTarget(var)
 			end
 			table.insert(parts, v)
 		end
-		if not valid or #parts < 2 then
+		if not valid or #parts < 1 then
 			varSplit = false
 		else
 			varSplit = parts
@@ -1284,6 +1343,7 @@ function st:updateEases()
 						time = t, order = e.order, var = e.var, mode = e.mode,
 						start = e.start, value = e.value,
 						duration = e.duration, ease = e.ease,
+						source = e,
 					})
 				end
 			end
@@ -1293,13 +1353,20 @@ function st:updateEases()
 	
 	local groups, groupOrder = {}, {}
 	for _, inst in ipairs(instances) do
-		local target, field = self:resolveVarTarget(inst.var)
+		local target, field
+		if type(inst.var) == 'string' and inst.var ~= '' then
+			target, field = self:resolveVarTarget(inst.var)
+		end
 		if target and type(target[field]) == 'number' then
 			if not groups[inst.var] then
 				groups[inst.var] = { target = target, field = field, events = {} }
 				table.insert(groupOrder, inst.var)
 			end
 			table.insert(groups[inst.var].events, inst)
+		else
+			self:reportProblem('Ease', inst.source,
+				'Ease on "' .. tostring(inst.var) .. '" was skipped: ' .. self:describeVarProblem(inst.var),
+				inst.source, 'marker')
 		end
 	end
 	
@@ -1307,10 +1374,18 @@ function st:updateEases()
 		local group = groups[key]
 		local target, field = group.target, group.field
 		
-		target[field] = resolveEasedValue(group.events, function(e) return e.value end, target[field] or 0, 
-			self.editorBeat, {allowAdd = true, startOverride = function(e, base) 
-				return e.start or base 
+		local ok, result = pcall(resolveEasedValue, group.events, function(e) return e.value end, target[field] or 0,
+			self.editorBeat, {allowAdd = true, startOverride = function(e, base)
+				return e.start or base
 			end})
+		
+		if ok and type(result) == 'number' then
+			target[field] = result
+		else
+			local src = group.events[#group.events].source
+			local why = ok and ('produced a ' .. type(result) .. ' instead of a number') or tostring(result)
+			self:reportProblem('Ease', src, 'Ease on "' .. key .. '" errored: ' .. why, src, 'marker')
+		end
 	end
 end
 
@@ -1334,6 +1409,8 @@ function st:updateSetBooleans()
 		local target, field = self:resolveVarTarget(var)
 		if target then
 			target[field] = m.enable
+		else
+			self:reportProblem('Boolean', m, 'setBoolean on "' .. var .. '": ' .. self:describeVarProblem(var), m, 'marker')
 		end
 	end
 end
@@ -1451,6 +1528,7 @@ function st:rebuildDecoObjects()
 end
 
 st:setUpdate(function(self, dt)
+	self:clearProblems()
 	self.p.x = 300
 	self.p.y = 180
 	
@@ -1531,7 +1609,7 @@ st:setUpdate(function(self, dt)
 		local ev = nil
 		for i, v in ipairs(self.pEventDecoders) do
 			local success, result = pcall(v, self.placeEvent)
-			if success then
+			if success and result ~= nil then
 				ev = result
 			end
 		end
@@ -2114,7 +2192,7 @@ function st:imgui()
 	helpers.SetNextWindowSize(250, 220, window_flag)
 	imgui.Begin("Settings ##keyframer",nil,inputFlag)
 		if imgui.BeginTabBar("##settingsTabs") then
-			if imgui.BeginTabItem("Playback") then
+			if imgui.BeginTabItem("Misc") then
 				self.rateMod = helpers.SliderFloat('Playback speed (0.25x-2x)',
 					self.rateMod, 0.25, 2)
 				self.rateMod = math.floor(self.rateMod * 20 + 0.5) / 20
@@ -2152,6 +2230,10 @@ function st:imgui()
 					imgui.Text("Beat Snap: " .. beatSnapText)
 				end
 				
+				if imgui.Button('Reset Loads') then
+					self:resetLoads()
+				end
+				
 				imgui.EndTabItem()
 			end
 			
@@ -2160,6 +2242,7 @@ function st:imgui()
 				shuv.usePalette = helpers.InputBool("Use Palette", shuv.usePalette or false)
 				self.showOtherDecosWhileEditing = helpers.InputBool("Show Other Decos When Editing", self.showOtherDecosWhileEditing or false)
 				self.gridScale = helpers.InputInt("Grid Size", self.gridScale)
+				self.showProblems = helpers.InputBool("Show Problems Window", self.showProblems or false)
 				
 				imgui.SeparatorText("Layers")
 				self.drawHud = helpers.InputBool("Show HUD", self.drawHud or false) -- also need to update eases
@@ -2252,6 +2335,60 @@ function st:imgui()
 		end
 	imgui.End()
 	
+	if self.showProblems then
+		helpers.SetNextWindowPos(250, 500, window_flag)
+		helpers.SetNextWindowSize(220, 220, window_flag)
+		local count = #self.problemList
+		local title = (count > 0 and ("Problems (" .. count .. ")") or "Problems") .. "###keyframer_problems"
+		imgui.Begin(title, nil, inputFlag)
+			if count == 0 then
+				imgui.Text("Nothing wrong right now")
+			else
+				local cats, catOrder = {}, {}
+				for _, p in ipairs(self.problemList) do
+					if not cats[p.category] then
+						cats[p.category] = {}
+						table.insert(catOrder, p.category)
+					end
+					table.insert(cats[p.category], p)
+				end
+				table.sort(catOrder)
+				
+				for _, cat in ipairs(catOrder) do
+					imgui.SeparatorText(cat .. " (" .. #cats[cat] .. ")")
+					for i, p in ipairs(cats[cat]) do
+						imgui.TextWrapped(p.message)
+						if p.ev then
+							if imgui.Button("Select##prob" .. cat .. i) then
+								self:selectSingle(p.kind, p.ev)
+							end
+							imgui.SameLine()
+							if imgui.Button("Go to##prob" .. cat .. i) then
+								if not self.isPlaying then
+									self.editorBeat = p.ev.time
+								end
+							end
+						end
+					end
+				end
+			end
+			
+			local hist = self.errorHistory
+			if #hist > 0 then
+				imgui.SeparatorText("History (" .. #hist .. ")")
+				if imgui.Button("Clear history##problems") then
+					self.errorHistory = {}
+				end
+				for i = #hist, 1, -1 do
+					local h = hist[i]
+					imgui.TextWrapped(string.format("[%s] %s%s (beat %.2f)", h.category, h.message,
+						h.count > 1 and (" x" .. h.count) or "", h.beat or 0))
+					imgui.Separator()
+				end
+			end
+		imgui.End()
+	end
+	
 	if self.overlappingEventsDialogue then
 		helpers.SetNextWindowPos(190, 240, window_flag)
 		helpers.SetNextWindowSize(240, 240, window_flag)
@@ -2284,21 +2421,7 @@ function st:imgui()
 		imgui.End()
 	end
 	
-	if self.errorDialogue then
-		helpers.SetNextWindowPos(400, 200, window_flag)
-		helpers.SetNextWindowSize(400, 200, window_flag)
-		self.errorDialogue = imgui.Begin(self.errorHeader, true)
-
-		imgui.TextWrapped(self.errorMessage)
-
-		if imgui.Button('OK') then
-			self.errorDialogue = false
-		end
-		imgui.End()
-	end
-	
 	local wantsLeave = false
-	
 	if self.exitDialogue then
 		helpers.SetNextWindowPos(490, 310, window_flag)
 		helpers.SetNextWindowSize(220, 100, window_flag)
@@ -2320,43 +2443,122 @@ function st:imgui()
 	end
 end
 
+local function parseSprite(sprite)
+	local template = sprite:match("([%w/%s]+)[!@#]")
+	local animation = sprite:match("!(%w+)")
+	local frame = sprite:match("#(%w+)")
+	local speed = sprite:match("@(%w+)")
+	if speed and (not animation) then
+		animation = 'all'
+	end
+	return template, animation, frame, speed
+end
+
+function st:assetBasePath(name)
+	if name:sub(1, 1) == '~' then
+		local sub = name:sub(2)
+		local file = 'levels/' .. sub
+		if love.filesystem.getInfo(file) then
+			local real = love.filesystem.getRealDirectory(file)
+			if real and helpers.startswith(real, love.filesystem.getSaveDirectory()) then
+				return 'levels/', sub, 'attempted to access file outside game source'
+			end
+		end
+		return 'levels/', sub
+	end
+	return cLevel, name
+end
+
+function st:ensureAssetLoaded(kind, name, texName)
+	if type(name) ~= 'string' or name == '' then return true end
+	if kind == 'texture' and name:sub(1, 1) == '@' then return true end
+	
+	local store = (kind == 'texture') and self.vfx.textures or self.vfx.models
+	if store[name] then return true end
+	
+	local key = kind .. ':' .. name
+	if self.failedAssets[key] then return false end
+	
+	local path, field, blocked = self:assetBasePath(name)
+	local ok, err = pcall(function()
+		if blocked then error(blocked) end
+		local fpath = path .. field
+		if kind == 'texture' then
+			store[name] = love.graphics.newImage(fpath)
+		else
+			local tex = Deco3D.static.defaultTexture
+			if texName then
+				tex = self.vfx.textures[texName] or tex
+			end
+			store[name] = g3d.newModel(fpath, tex, {0, 1, 0}, nil, 1)
+		end
+	end)
+	
+	if not ok then
+		self.failedAssets[key] = tostring(err)
+		log('Could not load deco3d ' .. kind .. ' "' .. name .. '"', 'keditor')
+		return false
+	end
+	return true
+end
+
+function st:ensureSpriteLoaded(sprite)
+	if type(sprite) ~= 'string' or sprite == '' then
+		return true
+	end
+	
+	if sprite:sub(1, 1) == '@' then
+		local vfx = self.vfx
+		if sprite:sub(1, 4) == '@aft' then
+			return (vfx.aft and vfx.aft[sprite:sub(5)]) ~= nil
+		elseif sprite:sub(1, 6) == '@stamp' then
+			return (vfx.stampCanvases and vfx.stampCanvases[sprite:sub(7)]) ~= nil
+		elseif sprite:sub(1, 7) == '@canvas' then
+			return (vfx.canvas and vfx.canvas[sprite:sub(8)]) ~= nil
+		end
+		return true
+	end
+	
+	if self.failedSprites[sprite] then
+		return false
+	end
+	
+	local template, animation, frame = parseSprite(sprite)
+	local path, field, blocked = self:assetBasePath(sprite)
+	local ok, err = pcall(function()
+		if blocked then error(blocked) end
+		if not template then
+			if not self.vfx.decoSprites[sprite] then
+				self.vfx.decoSprites[sprite] = love.graphics.newImage(path .. field)
+			end
+		else
+			if not self.vfx.decoTemplates[template] then
+				self.vfx.decoTemplates[template] = ez.newjson(path .. template)
+			end
+			local inst = self.vfx.decoTemplates[template]:instance()
+			if animation then
+				inst:play(animation, tonumber(frame))
+			end
+		end
+	end)
+	
+	if not ok then
+		self.failedSprites[sprite] = tostring(err)
+		log('Could not load deco sprite "' .. sprite .. '"', 'keditor')
+		return false
+	end
+	return true
+end
+
 function st:updateDecoSprite(deco)
 	local sprite = deco.sprite
 	local template, animation, frame, speed = nil, nil, nil, nil
 	
 	if sprite ~= nil and sprite ~= '' and string.sub(sprite, 1, 1) ~= '@' then
-		template = sprite:match("([%w/%s]+)[!@#]")
-		animation = sprite:match("!(%w+)")
-		frame = sprite:match("#(%w+)")
-		speed = sprite:match("@(%w+)")
-		
-		if speed and (not animation) then
-			animation = 'all'
+		if not self:ensureSpriteLoaded(sprite) then
+			return false
 		end
-		
-		local path = cLevel
-		local sprField = sprite
-		
-		if not pcall(function()
-			if not template then
-				if not self.vfx.decoSprites[sprite] then
-					local fpath = path..sprField
-					self.vfx.decoSprites[sprite] = love.graphics.newImage(fpath)
-				end
-			else
-				local fpath = path..template
-				if not self.vfx.decoTemplates[template] then
-					self.vfx.decoTemplates[template] = ez.newjson(fpath)
-				end
-			end
-		end) then
-			local filename = path..sprField
-			if template then
-				filename = path..template..'.json'
-			end
-			self:playbackError('Could not load deco file "' .. filename .. '"')
-			return
-		end
+		template, animation, frame, speed = parseSprite(sprite)
 	end
 	
 	if template and self.vfx.decoTemplates[template] then
@@ -2382,6 +2584,7 @@ function st:updateDecoSprite(deco)
 		deco.animSpeed = nil
 		deco.animFrame = nil
 	end
+	return true
 end
 
 function st:updateAdvanceTextDecos()
@@ -2460,9 +2663,20 @@ local instantPropsDeco3D = {
 	-- nothing
 }
 
+local function latestEventWith(events, prop, beat)
+	local found
+	for _, e in ipairs(events) do
+		if e[prop] ~= nil and e.time <= beat then found = e end
+	end
+	return found
+end
+
 function st:updateDecos()
 	self.renderDecos = self.renderDecos or {}
 	for k, v in pairs(self.decos) do -- will probably need to sort when tags are not ignored
+		if v.id == nil or v.id == '' then 
+			self:reportProblem('Deco', k, 'a deco keyframe has no id', v.events[1], 'keyframe')
+		end
 		if #v.events == 0 or self.editorBeat < v.events[1].time then
 			self.renderDecos[k] = nil
 			goto continue
@@ -2548,11 +2762,48 @@ function st:updateDecos()
 				end})
 			
 			if p == "sprite" and newValue ~= deco.sprite then
-				spriteChanged = true
+				if self:ensureSpriteLoaded(newValue) then
+					spriteChanged = true
+				else
+					self:reportProblem('Sprite', k,
+						'"' .. tostring(v.id) .. '": sprite "' .. tostring(newValue) .. '" failed to load'
+						.. (self.failedSprites[newValue] and (': ' .. self.failedSprites[newValue]) or ''),
+						propEvents[#propEvents], 'keyframe')
+					newValue = deco.sprite
+				end
+			end
+			
+			if isDeco3D and (p == 'model' or p == 'texture') and type(newValue) == 'string' and newValue ~= deco[p] then
+				local texName
+				if p == 'model' then
+					local te = latestEventWith(v.events, 'texture', self.editorBeat)
+					texName = te and te.texture
+				end
+				if not self:ensureAssetLoaded(p, newValue, texName) then
+					self:reportProblem(p == 'model' and 'Model' or 'Texture', k .. ':' .. p,
+						'"' .. tostring(v.id) .. '": ' .. p .. ' "' .. newValue .. '" failed to load: '
+						.. tostring(self.failedAssets[p .. ':' .. newValue]),
+						propEvents[#propEvents], 'keyframe')
+					newValue = deco[p]
+				end
 			end
 			
 			deco._spawnTime = isFirstOfID and propEvents[#propEvents].time or deco._spawnTime or 0
 			deco[p] = newValue
+			
+			if p == "parentid" and type(newValue) == 'string' and newValue ~= '' then
+				local msg
+				if newValue == v.id then
+					msg = 'parentid "' .. newValue .. '" is the deco itself'
+				elseif not self:getDefinedDecoIds()[newValue] then
+					msg = 'parentid "' .. newValue .. '" doesn\'t exist'
+				end
+				if msg then
+					self:reportProblem('Parent', k, '"' .. tostring(v.id) .. '": ' .. msg,
+						propEvents[#propEvents], 'keyframe')
+				end
+			end
+			
 			if p == "hide" then
 				deco._trueHide = newValue
 			end
@@ -2563,7 +2814,20 @@ function st:updateDecos()
 			if isCamera3D then
 				Event.setCanvas(deco.canvas or '', deco)
 			end
-			deco:updateSprite()
+			local ok, err = pcall(deco.updateSprite, deco)
+			if not ok then
+				local cat = isDeco3D and '3D' or (isText and 'Text' or 'Camera')
+				local detail = ''
+				local errSrc
+				if isDeco3D then
+					detail = ' (model "' .. tostring(deco.model) .. '", texture "' .. tostring(deco.texture) .. '")'
+					errSrc = latestEventWith(v.events, 'model', self.editorBeat)
+						or latestEventWith(v.events, 'texture', self.editorBeat)
+				end
+				self:reportProblem(cat, k .. ':load',
+					'"' .. tostring(v.id) .. '" failed to update' .. detail .. ': ' .. tostring(err),
+					errSrc or v.events[1], 'keyframe')
+			end
 		else
 			if spriteChanged or deco.spr == nil then
 				self:updateDecoSprite(deco)
@@ -2603,6 +2867,12 @@ function st:updateDecos()
 				local camObj = self.vfx.camera3d[deco.camera]
 				if camObj then
 					camObj.models[k:sub(8)] = true
+				else
+					local src
+					for _, e in ipairs(v.events) do
+						if e.camera ~= nil and e.time <= self.editorBeat then src = e end
+					end
+					self:reportProblem('3D', k, 'deco3d "' .. tostring(v.id) .. '": camera "' .. deco.camera .. '" doesn\'t exist', src, 'keyframe')
 				end
 			end
 		end
@@ -3049,7 +3319,8 @@ st:setFgDraw(function(self) -- this is a mess
 			self.editInfo.sx = deco.sx
 			self.editInfo.sy = deco.sy
 			
-			local sw, sh = deco.spr:getDimensions()
+			local sw, sh = 0, 0
+			if deco.spr then sw, sh = deco.spr:getDimensions() end
 			
 			love.graphics.push()
 			love.graphics.translate(self.editInfo.startX - self.pan[1],self.editInfo.startY - self.pan[2])
@@ -3107,8 +3378,16 @@ st:setFgDraw(function(self) -- this is a mess
 			deco.x, deco.y = deco.originalX, deco.originalY
 		end
 	end)
-	if not success then print("failed drawing deco") end
-	if err then print(err) end
+	if not success then
+		print("failed drawing deco", err)
+		self:reportProblem('Draw', 'draw', tostring(err))
+		love.graphics.setCanvas(oldCanv)
+		for _, v in pairs(self.renderDecos) do
+			if v.originalX then
+				v.x, v.y = v.originalX, v.originalY
+			end
+		end
+	end
 	
 	love.graphics.setColor(.99, 0, 0)
 	love.graphics.setLineWidth(2)
