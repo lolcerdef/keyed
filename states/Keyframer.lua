@@ -1675,10 +1675,206 @@ function st:imgui()
 	helpers.SetNextWindowPos(950, 50, window_flag)
 	helpers.SetNextWindowSize(250, 450, window_flag)
 	imgui.Begin("Event Editor##keyframer",nil,inputFlag) -- todo: make thses use cmd.ModifyKeys
-		local selectedCount = self:getEListCount(self.selectedEvents)
-		if selectedCount > 1 then
+	local selectedCount = self:getEListCount(self.selectedEvents)
+	if selectedCount > 1 then
+		local selectedList = self:getEList(self.selectedEvents)
+		
+		imgui.Text('Selecting ' .. selectedCount .. ' events')
+		imgui.Separator()
+		imgui.Text('Types:')
+		
+		local typeCounts, typeOrder = {}, {}
+		for _, ev in ipairs(selectedList) do
+			if not typeCounts[ev.type] then
+				typeCounts[ev.type] = 0
+				table.insert(typeOrder, ev.type)
+			end
+			typeCounts[ev.type] = typeCounts[ev.type] + 1
+		end
+		table.sort(typeOrder)
+		
+		for _, k in ipairs(typeOrder) do
+			if imgui.Button('Only##multi_' .. k) then
+				local newSelection = { events = {} }
+				for ev, kind in pairs(self.selectedEvents.events) do
+					if ev.type == k then
+						newSelection.events[ev] = kind
+					end
+				end
+				self.selectedEvents = newSelection
+			end
+			imgui.SameLine()
+			if imgui.Button('Remove##multi_' .. k) then
+				local newSelection = { events = {} }
+				for ev, kind in pairs(self.selectedEvents.events) do
+					if ev.type ~= k then
+						newSelection.events[ev] = kind
+					end
+				end
+				self.selectedEvents = newSelection
+			end
+			imgui.SameLine()
+			local info = Event.info[k]
+			imgui.Text((info and info.name or k) .. ' (' .. typeCounts[k] .. ')')
+		end
+		
+		selectedList = self:getEList(self.selectedEvents)
+		selectedCount = #selectedList
+		
+		if selectedCount > 0 then
+			imgui.Separator()
 			
-		elseif selectedCount == 1 then
+			local beatStep = 0.01
+			if self.beatSnap ~= 0 then
+				beatStep = 1 / self:getBeatSnapValue()
+			end
+			
+			local deltaAngle = 0
+			local deltaBeat = 0
+			local deltaScale = 1
+			
+			imgui.Text('Rotate all')
+			imgui.SameLine()
+			if imgui.Button('-##multiangleminus') then
+				deltaAngle = deltaAngle - 1
+			end
+			imgui.SameLine()
+			if imgui.Button('+##multiangleplus') then
+				deltaAngle = deltaAngle + 1
+			end
+			
+			imgui.Text('Retime all')
+			imgui.SameLine()
+			if imgui.Button('-##multibeatminus') then
+				deltaBeat = deltaBeat - beatStep
+			end
+			imgui.SameLine()
+			if imgui.Button('+##multibeatplus') then
+				deltaBeat = deltaBeat + beatStep
+			end
+			
+			imgui.Separator()
+			if imgui.Button('Flip Horiz') then
+				deltaScale = -1
+			end
+			imgui.SameLine()
+			if imgui.Button('Flip Vert') then
+				deltaScale = -1
+				deltaAngle = -180
+			end
+			
+			if deltaAngle ~= 0 or deltaBeat ~= 0 or deltaScale ~= 1 then
+				self.cmd:startGroup()
+				local anyApplied = false
+				for _, ev in ipairs(selectedList) do
+					if ev.type ~= 'play' then
+						local changes = {}
+						if ev.angle ~= nil and (deltaAngle ~= 0 or deltaScale ~= 1) then
+							changes.angle = ev.angle * deltaScale + deltaAngle
+						end
+						if ev.time ~= nil and deltaBeat ~= 0 then
+							changes.time = ev.time + deltaBeat
+						end
+						if next(changes) then
+							self.cmd:executeNew(cmd.ModifyKeys, ev, changes)
+							anyApplied = true
+						end
+					end
+				end
+				self.cmd:endGroup('Modify ' .. #selectedList .. ' events')
+				
+				if anyApplied then
+					self:resetLoads()
+					self:rebuildDecoObjects()
+				end
+			end
+			
+			local sameType = true
+			local firstEv = selectedList[1]
+			for _, ev in ipairs(selectedList) do
+				if ev.type ~= firstEv.type then
+					sameType = false
+					break
+				end
+			end
+			
+			if sameType and firstEv.type ~= 'play' then
+				imgui.Separator()
+				imgui.Text('MultiEdit Properties')
+				self.multieditdeltamode = helpers.InputBool('Delta Mode', self.multieditdeltamode or false)
+				helpers.imguiHelpMarker('If enabled, changes to number properties will be relative to the original value instead of setting them directly.')
+				
+				imgui.Separator()
+				local origprops = helpers.copy(firstEv)
+				
+				local beatStep2 = 0.01
+				if self.beatSnap ~= 0 then
+					beatStep2 = 1 / self:getBeatSnapValue()
+				end
+				Event.property(firstEv, 'decimal', 'time', 'Beat to activate on', { step = beatStep2 })
+				Event.property(firstEv, 'decimal', 'angle', 'Angle to activate at', { step = 1 })
+				if self.variant and (not Event.info[firstEv.type].storeInChart) and (not Event.info[firstEv.type].hideVariant) then
+					Event.property(firstEv, 'enum', 'variant', 'Make this event specific to a variant', {enum = 'variants', optional = true, default = self.variant.name})
+				end
+				if (not Event.info[firstEv.type].hideOrder) then
+					Event.property(firstEv, 'int', 'order', 'Order to run on, lower = first', { optional = true, default = 0 })
+				end
+				if Event.editorProperties[firstEv.type] then
+					Event.editorProperties[firstEv.type](firstEv)
+				end
+				
+				local changed = {}
+				local anychanges = false
+				for k, v in pairs(origprops) do
+					if firstEv[k] ~= v then
+						if self.multieditdeltamode and type(v) == 'number' and type(firstEv[k]) == 'number' then
+							changed[k] = firstEv[k] - v
+						else
+							changed[k] = true
+						end
+						anychanges = true
+					end
+				end
+				for k, v in pairs(firstEv) do
+					if origprops[k] == nil then
+						if self.multieditdeltamode and type(v) == 'number' then
+							changed[k] = v
+						else
+							changed[k] = true
+						end
+						anychanges = true
+					end
+				end
+				
+				if anychanges then
+					self.cmd:startGroup()
+					for _, ev in ipairs(selectedList) do
+						if ev ~= firstEv then
+							local mod = {}
+							for k, cv in pairs(changed) do
+								if self.multieditdeltamode and type(cv) == 'number' then
+									mod[k] = (type(ev[k]) == 'number' and ev[k] or 0) + cv
+								else
+									mod[k] = firstEv[k]
+									if mod[k] == nil then mod[k] = "__MAKENIL__" end
+								end
+							end
+							self.cmd:executeNew(cmd.ModifyKeys, ev, mod)
+						end
+					end
+					self.cmd:endGroup('Modify ' .. #selectedList .. ' events')
+					self:resetLoads()
+					self:rebuildDecoObjects()
+				end
+			end
+			
+			imgui.Separator()
+			if imgui.Button('Delete selected events') then
+				self:deleteSelectedEvents()
+				self:rebuildDecoObjects()
+			end
+		end
+	elseif selectedCount == 1 then
 			local selectedEvent = self:getFirstOfEList(self.selectedEvents)
 			imgui.Text("Editing " .. Event.info[selectedEvent.type].name)
 			
