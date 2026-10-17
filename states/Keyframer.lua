@@ -32,6 +32,52 @@ local function eventSort(a, b)
 	return a.time < b.time
 end
 
+local maxRepeats = 4096
+
+local function getRepeatInfo(e)
+	local n = e.repeats
+	if type(n) ~= 'number' or n < 1 then return 0, 0 end
+	local d = e.repeatDelay
+	if type(d) ~= 'number' then d = 1 end
+	return math.min(math.floor(n), maxRepeats), d
+end
+
+local function visibleRepeatRange(e, firstBeat, lastBeat)
+	local n, d = getRepeatInfo(e)
+	if n == 0 or d == 0 then return 1, 0, d end
+	local lo, hi
+	if d > 0 then
+		lo = math.ceil((firstBeat - e.time) / d)
+		hi = math.floor((lastBeat - e.time) / d)
+	else
+		lo = math.ceil((lastBeat - e.time) / d)
+		hi = math.floor((firstBeat - e.time) / d)
+	end
+	return math.max(1, lo), math.min(n, hi), d
+end
+
+local function expandRepeats(list)
+	local out, any = {}, false
+	for _, e in ipairs(list) do
+		out[#out + 1] = e
+		local n, d = getRepeatInfo(e)
+		for i = 1, n do
+			any = true
+			out[#out + 1] = setmetatable(
+				{ time = e.time + i * d, isRepeat = true, repeatIndex = i, source = e },
+				{ __index = e }
+			)
+		end
+	end
+	if any then table.sort(out, eventSort) end
+	return out
+end
+
+local function halfAlpha(c)
+	local a = math.floor(c / 0x1000000) % 0x100
+	return math.floor(a / 2) * 0x1000000 + c % 0x1000000
+end
+
 local function resolveEasedValue(events, getVal, baseValue, currentBeat, opts)
 	opts = opts or {}
 	if #events == 0 then return baseValue end
@@ -96,9 +142,9 @@ local loadTheseMarkers = {
 	tags = true, 
 	stamp = true, 
 	aft = true,
-	--ease = true, --never mind it opened a portal to the void when it errored
+	--ease = true,
 	--setBoolean = true,
-	--initObject = true, --this is probably a bad idea, but i havent set anything up so future me will know
+	--initObject = true,
 } -- probably more i'm forgetting rn
 -- tags inset events into self.playEvents, perhaps this could be used?
 -- like maybe self.playEvents get rebuilt when a tag is added/removed/modified
@@ -319,6 +365,8 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	self.rowsDirty = true
 	
 	self.easeVarSplitCache = {}
+	self.easeBases = {}
+	self.paddleBases = setmetatable({}, {__mode = 'k'}) -- paddle -> original baseAngle/paddleSize/paddleWidth
 	self.failedSprites = {}
 	self.failedAssets = {} -- 'model:name' / 'texture:name' -> error string
 	self.problemList = {}
@@ -327,6 +375,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	self.showProblems = true
 	
 	self.markers = {}
+	self.instanceCache = {}
 	self.draggingMarker = nil
 	self.markersByType = {}
 	
@@ -877,7 +926,30 @@ function st:confirmEdit() -- i honestly don't know if i actually want to do mult
 	end
 end
 
+function st:getMarkerInstances(markerType)
+	local base = self.markersByType[markerType]
+	if not base then return nil end
+	local key = 'm:' .. markerType
+	local out = self.instanceCache[key]
+	if not out then
+		out = expandRepeats(base)
+		self.instanceCache[key] = out
+	end
+	return out
+end
+
+function st:getKeyframeInstances(decoKey, deco)
+	local key = 'k:' .. decoKey
+	local out = self.instanceCache[key]
+	if not out then
+		out = expandRepeats(deco.events)
+		self.instanceCache[key] = out
+	end
+	return out
+end
+
 function st:resetMarkers()
+	self.instanceCache = {}
 	self.playEvents = {}
 	self.markers = {}
 	self.markersByType = {}
@@ -911,6 +983,7 @@ function st:resetMarkers()
 end
 
 function st:resetDecos()
+	self.instanceCache = {}
 	self.decos = {}
 	
 	local index = 0
@@ -937,6 +1010,7 @@ function st:resetDecos()
 end
 
 function st:resetDecoEvents(decoType, decoId)
+	self.instanceCache = {}
 	local key = decoType .. ":" .. decoId
 	local events = {}
 	local firstIndex = nil
@@ -969,7 +1043,17 @@ function st:resetDecoEvents(decoType, decoId)
 	self.definedDecoIds = nil
 end
 
+function st:restoreEaseBases(keep)
+	for key, entry in pairs(self.easeBases) do
+		if not (keep and keep[key]) then
+			entry.target[entry.field] = entry.value
+			self.easeBases[key] = nil
+		end
+	end
+end
+
 function st:resetLoads()
+	self:restoreEaseBases()
 	self.failedSprites = {}
 	self.failedAssets = {}
 	self.drawDecos = true
@@ -1162,7 +1246,8 @@ function st:runDecoOnLoad(v)
 	if not ok then self:logError('Load', tostring(err)) end
 end
 
-function st:describeVarProblem(var)
+function st:describeVarProblem(var, expected)
+	expected = expected or 'number'
 	if type(var) ~= 'string' or var == '' then
 		return "no variable set"
 	end
@@ -1170,15 +1255,15 @@ function st:describeVarProblem(var)
 	if not target then
 		return "path doesn't resolve (no numeric parts, and every parent must exist)"
 	end
-	if target[field] == nil then
+	if target[field] == nil and expected == 'number' then
 		return "'" .. field .. "' doesn't exist"
 	end
-	return "'" .. field .. "' is a " .. type(target[field]) .. ", expected a number"
+	return "'" .. field .. "' is a " .. type(target[field]) .. ", expected a " .. expected
 end
 
 function st:getRetimeOffset(beat)
 	local offset = 0
-	local retimes = self.markersByType.retime
+	local retimes = self:getMarkerInstances('retime')
 	if not retimes then return offset end
 	for _, m in ipairs(retimes) do
 		if beat > m.time then
@@ -1203,8 +1288,8 @@ function st:getBPMAtBeat(beat)
 			end
 		end
 	end
-	scan(self.markersByType.play)
-	scan(self.markersByType.setBPM)
+	scan(self:getMarkerInstances('play'))
+	scan(self:getMarkerInstances('setBPM'))
 	
 	if self.rateMod then
 		bpm = bpm * self.rateMod
@@ -1214,7 +1299,7 @@ end
 
 function st:setOutline()
 	local bestTime = -math.huge
-	local outlines = self.markersByType.outline
+	local outlines = self:getMarkerInstances('outline')
 	if not outlines then return end
 	for _, m in ipairs(outlines) do
 		if m.time <= self.editorBeat then
@@ -1233,7 +1318,7 @@ function st:setBGColor()
 	local color = 0
 	local vcolor = nil
 	local bestTime = -math.huge
-	local bgColors = self.markersByType.setBgColor
+	local bgColors = self:getMarkerInstances('setBgColor')
 	if bgColors then
 		for _, m in ipairs(bgColors) do
 			if m.time <= self.editorBeat then
@@ -1255,7 +1340,7 @@ function st:updateCanvs()
 end
 
 function st:updateStamps()
-	local stamps = self.markersByType.stamp
+	local stamps = self:getMarkerInstances('stamp')
 	if not stamps then return end
 	
 	if self.editorBeat < (self.lastEditorBeat) - 0.0001 then
@@ -1272,7 +1357,7 @@ function st:updateStamps()
 end
 
 function st:updateAfts()
-	local afts = self.markersByType.aft
+	local afts = self:getMarkerInstances('aft')
 	if not afts then return end
 	
 	if self.editorBeat < (self.lastEditorBeat) - 0.0001 then
@@ -1328,24 +1413,22 @@ function st:resolveVarTarget(var)
 end
 
 function st:updateEases()
-	local easeMarkers = self.markersByType.ease
-	if not easeMarkers then return end
+	local easeMarkers = self:getMarkerInstances('ease')
+	if not easeMarkers then
+		self:restoreEaseBases()
+		return
+	end
 	
 	local instances = {}
 	for _, e in ipairs(easeMarkers) do
 		if e.mode ~= 'setRandom' and e.mode ~= 'addRandom' then
-			local repeats = e.repeats or 0
-			local repeatDelay = e.repeatDelay or 1
-			for r = 0, repeats do
-				local t = e.time + r * repeatDelay
-				if t <= self.editorBeat then
-					table.insert(instances, {
-						time = t, order = e.order, var = e.var, mode = e.mode,
-						start = e.start, value = e.value,
-						duration = e.duration, ease = e.ease,
-						source = e,
-					})
-				end
+			if e.time <= self.editorBeat then
+				table.insert(instances, {
+					time = e.time, order = e.order, var = e.var, mode = e.mode,
+					start = e.start, value = e.value,
+					duration = e.duration, ease = e.ease,
+					source = e.source or e,
+				})
 			end
 		end
 	end
@@ -1374,7 +1457,13 @@ function st:updateEases()
 		local group = groups[key]
 		local target, field = group.target, group.field
 		
-		local ok, result = pcall(resolveEasedValue, group.events, function(e) return e.value end, target[field] or 0,
+		local entry = self.easeBases[key]
+		if not entry or entry.target ~= target or entry.field ~= field then
+			entry = { target = target, field = field, value = target[field] }
+			self.easeBases[key] = entry
+		end
+		
+		local ok, result = pcall(resolveEasedValue, group.events, function(e) return e.value end, entry.value or 0,
 			self.editorBeat, {allowAdd = true, startOverride = function(e, base)
 				return e.start or base
 			end})
@@ -1387,10 +1476,12 @@ function st:updateEases()
 			self:reportProblem('Ease', src, 'Ease on "' .. key .. '" errored: ' .. why, src, 'marker')
 		end
 	end
+	
+	self:restoreEaseBases(groups)
 end
 
 function st:updateSetBooleans()
-	local boolMarkers = self.markersByType.setBoolean
+	local boolMarkers = self:getMarkerInstances('setBoolean')
 	if not boolMarkers then return end
 	
 	local latestByVar = {}
@@ -1407,10 +1498,12 @@ function st:updateSetBooleans()
 	
 	for var, m in pairs(latestByVar) do
 		local target, field = self:resolveVarTarget(var)
-		if target then
+		local existing = target and target[field]
+		if target and (existing == nil or type(existing) == 'boolean') then -- ...
 			target[field] = m.enable
 		else
-			self:reportProblem('Boolean', m, 'setBoolean on "' .. var .. '": ' .. self:describeVarProblem(var), m, 'marker')
+			local src = m.source or m
+			self:reportProblem('Boolean', src, 'setBoolean on "' .. var .. '": ' .. self:describeVarProblem(var, 'boolean'), src, 'marker')
 		end
 	end
 end
@@ -1422,7 +1515,7 @@ function st:updatePlayer()
 	local numPaddles = #self.p.paddles
 	
 	local paddleEvents = {}
-	local paddleMarkers = self.markersByType.paddles
+	local paddleMarkers = self:getMarkerInstances('paddles')
 	if paddleMarkers then
 		for _, m in ipairs(paddleMarkers) do
 			if m.time <= self.editorBeat then
@@ -1433,6 +1526,11 @@ function st:updatePlayer()
 	
 	for i = 1, numPaddles do
 		local paddle = self.p.paddles[i]
+		local pbase = self.paddleBases[paddle]
+		if not pbase then
+			pbase = { baseAngle = paddle.baseAngle, paddleSize = paddle.paddleSize, paddleWidth = paddle.paddleWidth }
+			self.paddleBases[paddle] = pbase
+		end
 		for _, e in ipairs(paddleEvents) do
 			if e.enabled ~= nil then
 				local paddleStart, paddleEnd = e.paddle, e.paddle
@@ -1460,7 +1558,7 @@ function st:updatePlayer()
 			end
 			
 			if #proppaddleEvents > 0 then
-				paddle[prop.field] = resolveEasedValue(proppaddleEvents, function(e) return e[prop.key] end, paddle[prop.field] or 0, self.editorBeat)
+				paddle[prop.field] = resolveEasedValue(proppaddleEvents, function(e) return e[prop.key] end, pbase[prop.field] or 0, self.editorBeat)
 			end
 		end
 		
@@ -1471,7 +1569,7 @@ function st:updatePlayer()
 			end
 		end
 		if #heightpaddleEvents > 0 then
-			paddle.paddleWidth = resolveEasedValue(heightpaddleEvents, function(e) return e.newHeight end, paddle.paddleWidth or 0, self.editorBeat)
+			paddle.paddleWidth = resolveEasedValue(heightpaddleEvents, function(e) return e.newHeight end, pbase.paddleWidth or 0, self.editorBeat)
 		end
 	end
 	
@@ -1482,8 +1580,9 @@ function st:updateColorPalette()
 	shuv.resetPal()
 	
 	local byIndex = {}
-	if self.markersByType.setColor then
-		for _, m in ipairs(self.markersByType.setColor) do
+	local setColors = self:getMarkerInstances('setColor')
+	if setColors then
+		for _, m in ipairs(setColors) do
 			local idx = m.color or 0
 			byIndex[idx] = byIndex[idx] or {}
 			table.insert(byIndex[idx], m)
@@ -1528,6 +1627,7 @@ function st:rebuildDecoObjects()
 end
 
 st:setUpdate(function(self, dt)
+	self.instanceCache = {}
 	self:clearProblems()
 	self.p.x = 300
 	self.p.y = 180
@@ -2087,6 +2187,26 @@ function st:imgui()
 			end
 		end
 		
+		for _, m in ipairs(self.markers) do
+			if m.repeats then
+				local lo, hi, d = visibleRepeatRange(m, first_beat - 1, last_beat + 1)
+				if lo <= hi then
+					local mc = self:isSelected("marker", m) and keySelC or (self.markerColors[m.type] or 0xFFFFFFFF)
+					local c = halfAlpha(mc)
+					for i = lo, hi do
+						local rx = beatToX(m.time + i * d)
+						if rx >= trackX - diamondSize and rx <= trackX + trackAreaW + diamondSize then
+							line(rx, tracky, rx, bottomY, c, 1)
+							triangle(rx - 6, bottomY, rx + 6, bottomY, rx, bottomY - 8, c)
+							if m.duration then
+								line(rx, bottomY, beatToX(m.time + i * d + m.duration), bottomY, c, 2)
+							end
+						end
+					end
+				end
+			end
+		end
+		
 		local markerClusters = clusterEvents(self.markers, 3)
 		
 		for _, group in ipairs(markerClusters) do
@@ -2131,6 +2251,24 @@ function st:imgui()
 			if row_index >= 0 and row_index < visible_rows then
 				local ry = tracky + row_index * rowH
 				local y = ry + rowH / 2
+				
+				for _, ev in ipairs(row.events) do
+					if ev.repeats then
+						local lo, hi, d = visibleRepeatRange(ev, first_beat - 1, last_beat + 1)
+						if lo <= hi then
+							local c = halfAlpha(self:isSelected("keyframe", ev) and keySelC or keyC)
+							for i = lo, hi do
+								local rx = beatToX(ev.time + i * d)
+								if rx >= trackX - diamondSize and rx <= trackX + trackAreaW + diamondSize then
+									if ev.duration and ev.duration > 0 then
+										line(rx, y, beatToX(ev.time + i * d + ev.duration), y, c, 2)
+									end
+									quad(rx, y - diamondSize, rx + diamondSize, y, rx, y + diamondSize, rx - diamondSize, y, c)
+								end
+							end
+						end
+					end
+				end
 				
 				local rowClusters = clusterEvents(row.events, 3)
 				
@@ -2441,7 +2579,7 @@ function st:imgui()
 				self.showProblems = helpers.InputBool("Show Problems Window", self.showProblems or false)
 				
 				imgui.SeparatorText("Layers")
-				self.drawHud = helpers.InputBool("Show HUD", self.drawHud or false) -- also need to update eases
+				self.drawHud = helpers.InputBool("Show HUD", self.drawHud or false)
 				self.showOnTop = helpers.InputBool("Show Ontop", self.showOnTop or false)
 				-- jesus christ i just wanted some funny draggy thigns now it looks like shit
 				local minLayer = helpers.InputBool("Minimum Layer", not not self.minLayer or false)
@@ -2494,7 +2632,7 @@ function st:imgui()
 					self.currentCanvas = 
 				end]]
 				-- need to do some sort of thing like buildTree but for general stuff
-				--canvases would be here probably
+				--canvases would be here
 				
 				imgui.EndTabItem()
 			end
@@ -2596,7 +2734,7 @@ function st:imgui()
 				local label = info and info.name or v.type
 				
 				if self.overlappingEventsType == "marker" then
-					local t = v.name or v.var or v.color
+					local t = v.name or v.var or v.color or v.variableName
 					if t and t ~= '' then
 						label = label .. " (" .. t .. ")"
 					end
@@ -2788,7 +2926,7 @@ function st:updateAdvanceTextDecos()
 	for k, v in pairs(self.decos) do
 		if v.kind == "textdeco" then
 			local latest = nil
-			for _, e in ipairs(v.events) do
+			for _, e in ipairs(self:getKeyframeInstances(k, v)) do
 				if e.textString ~= nil and e.time <= self.editorBeat then
 					if not latest or e.time > latest then
 						latest = e.time
@@ -2809,19 +2947,14 @@ function st:updateAdvanceTextDecos()
 		end
 	end
 
-	local advanceMarkers = self.markersByType.advancetextdeco
+	local advanceMarkers = self:getMarkerInstances('advancetextdeco')
 	if advanceMarkers then
 		for _, m in ipairs(advanceMarkers) do
-			local repeats = m.repeats or 0
-			local repeatDelay = m.repeatDelay or 1
-			
-			for i = 0, repeats do
-				local t = m.time + (i * repeatDelay)
-				if t <= self.editorBeat then
-					helpers.targetDecosUsingSyntaxicID(function(rawId)
-						addTrigger(rawId, t)
-					end, m.id)
-				end
+			local t = m.time
+			if t <= self.editorBeat then
+				helpers.targetDecosUsingSyntaxicID(function(rawId)
+					addTrigger(rawId, t)
+				end, m.id)
 			end
 		end
 	end
@@ -2935,6 +3068,7 @@ function st:updateDecos()
 		end
 		
 		local spriteChanged = false
+		local events = self:getKeyframeInstances(k, v) -- keyframes with repeats expanded
 		
 		for _, p in ipairs(props) do
 			if (p == "uvx" or p == "uvy") and deco.tiling then
@@ -2942,7 +3076,7 @@ function st:updateDecos()
 			end
 			
 			local propEvents = {}
-			for _, e in ipairs(v.events) do
+			for _, e in ipairs(events) do
 				if e[p] ~= nil and e.time <= self.editorBeat then
 					table.insert(propEvents, e)
 				end
@@ -2972,7 +3106,7 @@ function st:updateDecos()
 			if isDeco3D and (p == 'model' or p == 'texture') and type(newValue) == 'string' and newValue ~= deco[p] then
 				local texName
 				if p == 'model' then
-					local te = latestEventWith(v.events, 'texture', self.editorBeat)
+					local te = latestEventWith(events, 'texture', self.editorBeat)
 					texName = te and te.texture
 				end
 				if not self:ensureAssetLoaded(p, newValue, texName) then
@@ -3017,8 +3151,8 @@ function st:updateDecos()
 				local errSrc
 				if isDeco3D then
 					detail = ' (model "' .. tostring(deco.model) .. '", texture "' .. tostring(deco.texture) .. '")'
-					errSrc = latestEventWith(v.events, 'model', self.editorBeat)
-						or latestEventWith(v.events, 'texture', self.editorBeat)
+					errSrc = latestEventWith(events, 'model', self.editorBeat)
+						or latestEventWith(events, 'texture', self.editorBeat)
 				end
 				self:reportProblem(cat, k .. ':load',
 					'"' .. tostring(v.id) .. '" failed to update' .. detail .. ': ' .. tostring(err),
@@ -3065,7 +3199,7 @@ function st:updateDecos()
 					camObj.models[k:sub(8)] = true
 				else
 					local src
-					for _, e in ipairs(v.events) do
+					for _, e in ipairs(self:getKeyframeInstances(k, v)) do
 						if e.camera ~= nil and e.time <= self.editorBeat then src = e end
 					end
 					self:reportProblem('3D', k, 'deco3d "' .. tostring(v.id) .. '": camera "' .. deco.camera .. '" doesn\'t exist', src, 'keyframe')
@@ -3523,7 +3657,7 @@ st:setFgDraw(function(self) -- this is a mess
 			love.graphics.rotate(rot)
 			
 			love.graphics.setColor(1, 0, 0, 1)
-			love.graphics.setLineWidth(1 / math.max(math.min(self.editInfo.startSX, self.editInfo.startSY), 0.0001))
+			love.graphics.setLineWidth(1 / math.max(math.min(math.abs(self.editInfo.startSX), math.abs(self.editInfo.startSY)), 0.0001))
 			love.graphics.push()
 			love.graphics.scale(self.editInfo.startSX, self.editInfo.startSY)
 			love.graphics.rectangle("line", -deco.ox, -deco.oy, sw, sh)

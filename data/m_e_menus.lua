@@ -1,20 +1,20 @@
 return {
 	beattools = {
 		{
-			path = 'files/calculator.lua', name = 'Calculator', run = true, replace = {
+			path = 'files/editor/imgui/windows/calculator.lua', name = 'Calculator', run = true, replace = {
 				'mod.config.editorCalculator', 'cs.enabledModEMenus["beattools"].Calculator', "Calculate", "Calculate##keyframer",
 				'mod.', 'mods.beattools.',
 			}
 		},
 		{
-			path = 'files/bookmarkList.lua', name = 'Bookmark List', run = true, replace = {
+			path = 'files/editor/imgui/windows/bookmarkList.lua', name = 'Bookmark List', run = true, replace = {
 				'mod.config.bookmarkList', 'cs.enabledModEMenus["beattools"]["Bookmark List"]', '"Bookmarks', '"Bookmarks##keyframer',
 				'mod.', 'mods.beattools.', 'cs:noSelection()', 'cs:clearSelection()', 'cs.selectedEvent = cs.level.events[utilitools.files.beattools.easing.getIndex(bookmark.event)]',
 				'cs:selectSingle("marker", cs.level.events[utilitools.files.beattools.easing.getIndex(bookmark.event)])'
 			}
 		},
 		{
-			path = 'lovely/menu-in-editor.toml', name = 'Beattools', run = true, from = 'if mods.beattools.config.editorMenu then', to = 'imgui.End()',
+			path = 'lovely/editor/imgui/menu-in-editor.toml', name = 'Beattools', run = true, from = 'if mods.beattools.config.editorMenu then', to = 'imgui.End()',
 				before = "return function(window_flag, inputFlag)", after = 'end\nend', replace = {'mods.beattools.config.editorMenu', 'cs.enabledModEMenus["beattools"]["Beattools"]', 'self.', 'cs.',
 				's",', 's##keyframer",'}
 		}
