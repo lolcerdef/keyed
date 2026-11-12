@@ -1,6 +1,6 @@
 local st = Gamestate:new('Keyframer')
-
 local keyedConfig = mods.keyed.config
+
 local function convertCol(c)
 	local a = math.floor(c / 0x1000000) % 0x100
 	local r = math.floor(c / 0x10000) % 0x100
@@ -9,8 +9,6 @@ local function convertCol(c)
 	
 	return {r / 255, g / 255, b / 255, a / 255}
 end
-
--- constant things that used to be made every frame/multiple times
 
 -- clors :3
 local BGC = 0xFF222222
@@ -25,6 +23,91 @@ local keySelC = 0xFFFF6060
 local selBoxC = 0xFF90FF4F
 local selBoxFillC = 0x3390FF4F
 
+-- constants
+
+local maxRepeats = 4096
+local maxCanvasSize = 4096
+
+local decoKindLabel = {
+	deco = " [norm]",
+	textdeco = " [text]",
+	camera3d = " [cam]",
+	deco3d = " [model]",
+}
+
+local loadTheseMarkers = {
+	loadCustomFont = true,
+	-- newCanvas is handled by loadCanvases
+	tag = true,
+	stamp = true, 
+	aft = true,
+	--ease = true,
+	--setBoolean = true,
+	--initObject = true,
+} -- probably more i'm forgetting rn
+-- tags inset events into self.playEvents, perhaps this could be used?
+-- like maybe self.playEvents get rebuilt when a tag is added/removed/modified
+-- and everything else looks in this?
+-- tags are probably the only thing that does this no?
+-- now im thinking about it i could also do initObjects?
+
+local reloadOnEditTypes = {
+	newCanvas = true,
+	editCanvas = true,
+	aft = true,
+	stamp = true,
+}
+
+local decoEditProps = {
+	deco = { 'X', 'Y', 'R', 'SX', 'SY' },
+	textdeco = { 'X', 'Y', 'R', 'SX', 'SY' },
+	camera3d = { 'CX', 'CY', 'CZ', 'TX', 'TY', 'TZ' },
+	deco3d = { 'X', 'Y', 'Z', 'RX', 'RY', 'RZ', 'SX', 'SY', 'SZ' },
+}
+local editSuffixToProp = {
+	X = 'x', Y = 'y', Z = 'z',
+	CX = 'cx', CY = 'cy', CZ = 'cz',
+	TX = 'tx', TY = 'ty', TZ = 'tz',
+	R = 'r', RX = 'rx', RY = 'ry', RZ = 'rz',
+	SX = 'sx', SY = 'sy', SZ = 'sz',
+}
+
+local decoVfxTables = {
+	deco = 'deco',
+	textdeco = 'textdeco',
+	camera3d = 'camera3d',
+	deco3d = 'deco3d',
+}
+
+local timingTypes = {
+	play = true,
+	setBPM = true,
+}
+
+local instantPropsDeco = {
+	drawOrder = true,
+	recolor = true,
+}
+local instantPropsText = {
+	drawOrder = true,
+	recolor = true,
+	colour = true,
+	specialcolour = true,
+}
+local instantPropsCamera3D = {
+	drawOrder = true,
+}
+local instantPropsDeco3D = {
+	-- nothing
+}
+
+local paddleProps = {
+	{ key = 'newAngle', field = 'baseAngle' },
+	{ key = 'newWidth', field = 'paddleSize' },
+}
+
+-- helpers
+
 local function eventSort(a, b)
 	if a.time == b.time then
 		return (a.order or 0) < (b.order or 0)
@@ -32,7 +115,17 @@ local function eventSort(a, b)
 	return a.time < b.time
 end
 
-local maxRepeats = 4096
+local function sortEvents(list)
+	local n = #list
+	local wrapped = {}
+	for i = 1, n do wrapped[i] = { list[i], i } end
+	table.sort(wrapped, function(a, b)
+		if eventSort(a[1], b[1]) then return true end
+		if eventSort(b[1], a[1]) then return false end
+		return a[2] < b[2]
+	end)
+	for i = 1, n do list[i] = wrapped[i][1] end
+end
 
 local function getRepeatInfo(e)
 	local n = e.repeats
@@ -69,7 +162,8 @@ local function expandRepeats(list)
 			)
 		end
 	end
-	if any then table.sort(out, eventSort) end
+	if not any then return list end
+	sortEvents(out)
 	return out
 end
 
@@ -78,95 +172,93 @@ local function halfAlpha(c)
 	return math.floor(a / 2) * 0x1000000 + c % 0x1000000
 end
 
+local function shallowDiffers(a, b)
+	for k, v in pairs(a) do
+		if b[k] ~= v then return true end
+	end
+	for k, v in pairs(b) do
+		if a[k] ~= v then return true end
+	end
+	return false
+end
+
 local function resolveEasedValue(events, getVal, baseValue, currentBeat, opts)
 	opts = opts or {}
 	if #events == 0 then return baseValue end
 	
-	local function combine(prev, e)
+	local seg -- the tween that is currently in control
+	local function valueAt(beat)
+		if not seg then return baseValue end
+		local from, to = seg.from, seg.to
+		if seg.duration <= 0 or beat >= seg.time + seg.duration then
+			return to
+		end
+		if type(from) ~= 'number' or type(to) ~= 'number' then
+			return to
+		end
+		local t = helpers.clamp((beat - seg.time) / seg.duration, 0, 1)
+		return helpers.interpolate(from, to, t, seg.ease)
+	end
+	
+	for _, e in ipairs(events) do
+		if e.time > currentBeat then break end
+		
 		local val = getVal(e)
+		local now = valueAt(e.time) -- what the property is at the exact moment this event starts
 		local isAdd = opts.allowAdd and e.mode == 'add' and type(val) == 'number'
+		
+		local from, target = now, nil
 		if isAdd then
-			return prev + val
+			target = (type(now) == 'number' and now or 0) + val
+		else
+			if opts.startOverride then
+				local o = opts.startOverride(e, now)
+				if o ~= nil then from = o end
+			end
+			if val ~= nil then
+				target = val
+			else
+				target = from
+			end
 		end
-		if val ~= nil then
-			return val
+		
+		local duration = e.duration or 0
+		if opts.instant and opts.instant(e) then
+			duration = 0
 		end
-		return prev
+		
+		seg = { time = e.time, duration = duration, ease = e.ease or 'linear', from = from, to = target }
 	end
 	
-	local base = baseValue
-	for i = 1, #events - 1 do
-		base = combine(base, events[i])
-	end
-	
-	local e = events[#events]
-	local startVal = opts.startOverride and opts.startOverride(e, base) or base
-	local val = getVal(e)
-	local isAdd = opts.allowAdd and e.mode == 'add' and type(val) == 'number'
-	local target
-	if isAdd then
-		target = startVal + val
-	elseif val ~= nil then
-		target = val
-	else
-		target = startVal
-	end
-	
-	local instant = opts.instant and opts.instant(e)
-	local ease = e.ease or 'linear'
-	local duration = e.duration or 0
-	local t = (duration > 0 and not instant)
-		and helpers.clamp((currentBeat - e.time) / duration, 0, 1)
-		or 1
-	
-	if type(target) == 'number' then
-		if type(startVal) ~= 'number' then
-			return target
-		end
-		return helpers.interpolate(startVal, target, t, ease)
-	end
-	return target
+	return valueAt(currentBeat)
 end
 
-local decoKindLabel = {
-	deco = " [norm]",
-	textdeco = " [text]",
-	camera3d = " [cam]",
-	deco3d = " [model]",
-}
+local function latestEventWith(events, prop, beat)
+	local found
+	for _, e in ipairs(events) do
+		if e[prop] ~= nil and e.time <= beat then found = e end
+	end
+	return found
+end
 
-local loadTheseMarkers = {
-	loadCustomFont = true,
-	newCanvas = true,
-	--decoShader = true,
-	tags = true, 
-	stamp = true, 
-	aft = true,
-	--ease = true,
-	--setBoolean = true,
-	--initObject = true,
-} -- probably more i'm forgetting rn
--- tags inset events into self.playEvents, perhaps this could be used?
--- like maybe self.playEvents get rebuilt when a tag is added/removed/modified
--- and everything else looks in this?
--- tags are probably the only thing that does this no?
--- now im thinking about it i could also do initObjects?
+local function clearCanvas(c)
+	if c then
+		c:renderTo(function() love.graphics.clear(0, 0, 0, 0) end)
+	end
+end
 
-local decoEditProps = {
-	deco = { 'X', 'Y', 'R', 'SX', 'SY' },
-	textdeco = { 'X', 'Y', 'R', 'SX', 'SY' },
-	camera3d = { 'CX', 'CY', 'CZ', 'TX', 'TY', 'TZ' },
-	deco3d = { 'X', 'Y', 'Z', 'RX', 'RY', 'RZ', 'SX', 'SY', 'SZ' },
-}
+local function parseSprite(sprite)
+	local template = sprite:match("([%w/%s]+)[!@#]")
+	local animation = sprite:match("!(%w+)")
+	local frame = sprite:match("#(%w+)")
+	local speed = sprite:match("@(%w+)")
+	if speed and (not animation) then
+		animation = 'all'
+	end
+	return template, animation, frame, speed
+end
 
-local editSuffixToProp = {
-	X = 'x', Y = 'y', Z = 'z',
-	CX = 'cx', CY = 'cy', CZ = 'cz',
-	TX = 'tx', TY = 'ty', TZ = 'tz',
-	R = 'r', RX = 'rx', RY = 'ry', RZ = 'rz',
-	SX = 'sx', SY = 'sy', SZ = 'sz',
-}
-
+-- 4x4 matrix
 local function transformPoint(m, x, y, z, w)
 	return
 		m[1] * x + m[2] * y + m[3] * z + m[4] * w,
@@ -298,7 +390,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	em.clear()
 	
 	love.keyboard.setTextInput(true)
-	self.gm = em.init("GameManager") -- <- does something, not much though
+	self.gm = em.init("GameManager") -- <- does something
 	self.cmd = em.init("CommandHandler")
 	
 	self.canv = love.graphics.newCanvas(project.res.x,project.res.y)
@@ -366,9 +458,13 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	
 	self.easeVarSplitCache = {}
 	self.easeBases = {}
+	self.boolBases = {}
 	self.paddleBases = setmetatable({}, {__mode = 'k'}) -- paddle -> original baseAngle/paddleSize/paddleWidth
 	self.failedSprites = {}
 	self.failedAssets = {} -- 'model:name' / 'texture:name' -> error string
+	self.playerFaceCache = {} -- custom player face png -> image or false
+	self.loadProblems = {} -- problems found while loading shown every frame until the next reload
+	self.lastCanvBeat = -math.huge -- how far stamps/afts have been played up to
 	self.problemList = {}
 	self.problemSeen = {}
 	self.errorHistory = {}
@@ -413,6 +509,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		noise = 0xFF636E72,
 		hom = 0xFFB2BEC3,
 		songNameOverride = 0xFFFAB1A0,
+		forcePlayerSprite = 0xFFFD79A8,
 	}
 	
 	self.decoTypes = {
@@ -588,7 +685,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 				print("move what?")
 				return
 			end
-			self:setEditInfo()
+			if not self:setEditInfo() then return end
 			self.editMode = "move"
 		end,
 		'move deco',
@@ -600,7 +697,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 				print("scale what?")
 				return
 			end
-			self:setEditInfo()
+			if not self:setEditInfo() then return end
 			self.editMode = "scale"
 		end,
 		'scale deco',
@@ -612,14 +709,14 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 				print("rotate what?")
 				return
 			end
-			self:setEditInfo()
+			if not self:setEditInfo() then return end
 			self.editMode = "rotate"
 		end,
 		'rotate deco',
 		'r'
 	)
 	self:addKeybind(function()
-			self.lockedAxis = (self.editMode ~= 'none' and --need a check for 3d when we get there
+			self.lockedAxis = (self.editMode ~= 'none' and
 				self.lockedAxis ~= "x") and "x" or "none"
 		end,
 		'axis x',
@@ -651,7 +748,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 		'reset pan position',
 		'shift', 'r'
 	)
-	self:addKeybind(function() -- this perhaps sucks, doesn't play when editorBeat is before the play event
+	self:addKeybind(function()
 			self.isPlaying = not self.isPlaying
 			if self.isPlaying and self.soundData then
 				local volume = (savedata.options.audio.musicvolume/10)
@@ -661,7 +758,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 					:setVolume(volume)
 					:play()
 					:on("end", function() log("song finished!!!!!!!!!!") end)
-				self.source:setBeat(self.editorBeat--[[ - self:getRetimeOffset(self.editorBeat)]])
+				self.source:setBeat(self.editorBeat)
 				
 				if self.rateMod then
 					self.source:setPitch(self.rateMod)
@@ -713,7 +810,10 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	'redo','ctrl','y')
 	
 	self:addKeybind(function()
-		self.copiedEvents = helpers.copy(self.selectedEvents)
+		self.copiedEvents = { events = {} }
+		for ev, kind in pairs(self.selectedEvents.events) do
+			self.copiedEvents.events[helpers.copy(ev)] = kind
+		end
 	end,'copy selected','ctrl','c')
 	self:addKeybind(function()
 		local sourceKeyframes = self:getEList(self.copiedEvents, 'keyframe')
@@ -824,162 +924,313 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	self:rebuildDecoObjects()
 end)
 
-function st:commitDragTimes()
-	if not self.dragStartTimes then return end
-	
-	local changed = {}
-	for ev, startTime in pairs(self.dragStartTimes) do
-		if ev.time ~= startTime then
-			changed[#changed + 1] = { ev = ev, newTime = ev.time }
-			ev.time = startTime
+-- yummy keys
+function st:addKeybind(func, name, k1, k2, k3)
+	table.insert(self.keybinds, { func = func, name = name, k1 = k1, k2 = k2, k3 = k3 })
+end
+function st:checkKeybinds()
+	for i, v in ipairs(self.keybinds) do
+		if v.k1 and v.k2 and v.k3 then
+			if maininput:down(v.k1) and maininput:down(v.k2) and maininput:pressed(v.k3) then
+				log('pressed keybind ' .. v.name,'keditor')
+				v.func()
+			end
+		elseif v.k1 and v.k2 then
+			if maininput:down(v.k1) and maininput:pressed(v.k2) then
+				log('pressed keybind ' .. v.name,'keditor')
+				v.func()
+			end
+		else
+			if maininput:pressed(v.k1) then
+				log('pressed keybind ' .. v.name,'keditor')
+				v.func()
+			end
 		end
 	end
+end
+
+-- back to the normal editor, without saving
+function st:leave()
+	em.clear()
+	self.gm:stopLevel()
+	self.gm:resetLevel()
 	
-	if #changed > 0 then
-		if #changed > 1 then
+	if self.source and self.source.isPlaying then
+		self.source:stop()
+	end
+	
+	if savedata.options.game.customCursorInMenu and (savedata.options.game.cursorMode ~= "default") then
+		love.mouse.setVisible(false)
+	end
+	mouse.hidden = false
+	cs = bs.load("Editor")
+	cs:init()
+end
+
+-- snapping
+function st:getBeatSnapValue()
+	if self.beatSnap == 0 then return nil end
+	return self.beatSnapValues[self.beatSnap] or self.customBeatSnap
+end
+function st:getBeatStep()
+	local beatStep = 0.01
+	if self.beatSnap ~= 0 then
+		local snapValue = self:getBeatSnapValue()
+		beatStep = 1 / snapValue
+	end
+	return beatStep
+end
+
+function st:getAngleSnapValue()
+	return 360/16
+end
+
+-- selection
+function st:clearSelection()
+	self.selectedEvents = { events = {} }
+end
+function st:selectSingle(kind, obj)
+	self.selectedEvents = { events = { [obj] = kind } }
+end
+function st:addSelect(kind, obj)
+	self.selectedEvents.events[obj] = kind
+end
+function st:isSelected(kind, obj)
+	return self.selectedEvents.events[obj] == kind
+end
+function st:getSelectedFromGroup(kind, group)
+	for _, ev in ipairs(group) do
+		if self:isSelected(kind, ev) then
+			return ev
+		end
+	end
+	return nil
+end
+
+function st:getFirstOfEList(list)
+	local obj, kind = next(list.events)
+	return obj, kind
+end
+function st:getEList(list, kind)
+	local out = {}
+	for obj, k in pairs(list.events) do
+		if not kind or k == kind then
+			out[#out + 1] = obj
+		end
+	end
+	return out
+end
+function st:getEListCount(list, kind)
+	local count = 0
+	for obj, k in pairs(list.events) do
+		if not kind or k == kind then
+			count = count + 1
+		end
+	end
+	return count
+end
+-- i have no idea why this is here and im afraid to touch it
+function st:clearMultiselectVars()
+	self:clearSelection()
+end
+
+function st:deleteSelectedEvents()
+	local list = self:getEList(self.selectedEvents)
+	if #list > 0 then
+		if #list > 1 then
 			self.cmd:startGroup()
-			for _, c in ipairs(changed) do
-				self.cmd:executeNew(cmd.ModifyKeys, c.ev, { time = c.newTime })
-			end
-			self.cmd:endGroup("Moved "..#changed.." events")
+			self.cmd:executeNew(cmd.RemoveMultiple, list)
+			self.cmd:endGroup("Deleted "..#list.." events")
 		else
-			self.cmd:executeNew(cmd.ModifyKeys, changed[1].ev, { time = changed[1].newTime })
+			self.cmd:executeNew(cmd.RemoveEvent, list[1])
 		end
 		
-		for _, r in ipairs(self.timelineRows) do
-			table.sort(r.events, eventSort)
-		end
-		table.sort(self.markers, eventSort)
+		self:clearSelection()
+		self:resetLoads()
+	else
+		print("nothing selected?")
 	end
-	
-	self.dragStartTimes = nil
 end
-
-function st:setEditInfo()
-	local list = self:getEList(self.selectedEvents, 'keyframe')
-	local endBeat = -math.huge
-	for _, ev in ipairs(list) do
-		local evEnd = ev.time + (ev.duration or 0)
-		if evEnd > endBeat then
-			endBeat = evEnd
-		end
-	end
-	self.editorBeat = endBeat
-	
-	self:updateDecos()
-	
-	local deco, eventRef, kind
-	for _, ev in ipairs(list) do
-		local key = ev.type .. ":" .. ev.id
-		local d = self.decoObjects[key]
-		if d then
-			deco = d
-			eventRef = ev
-			kind = ev.type
-			break
-		end
-	end
-	
-	local editProps = decoEditProps[kind] or decoEditProps.deco
-	print(kind)
-	self.editInfo = {
-		multiEdit = (#list > 1),
-		startMouseX = mouse.rx + self.pan[1],
-		startMouseY = mouse.ry + self.pan[2],
-		startMouseRawX = mouse.rx,
-		startMouseRawY = mouse.ry,
-		decoRef = deco,
-		eventRef = eventRef,
-		editProps = editProps,
-		shuvState = self.editInfo.shuvState or shuv.usePalette,
-		is3D = (kind == 'camera3d') or (kind == 'deco3d')
-	}
-	
-	if deco then
-		for _, suf in ipairs(editProps) do
-			self.editInfo['start' .. suf] = deco[editSuffixToProp[suf]]
-		end
-	end
-	
-	shuv.usePalette = false
-end
-
-function st:confirmEdit() -- i honestly don't know if i actually want to do multiselect
-	if self.editMode == "none" then return end
-	
-	self.editMode = "none"
-	self.lockedAxis = "none"
-	shuv.usePalette = self.editInfo.shuvState
-	
-	local changes = {}
-	local hasChanges = false
-	for _, suf in ipairs(self.editInfo.editProps or {}) do
-		local prop = editSuffixToProp[suf]
-		local val = self.editInfo[prop]
-		if val ~= nil then
-			changes[prop] = val
-			hasChanges = true
-		end
-	end
-	if hasChanges then
-		self.cmd:executeNew(cmd.ModifyKeys, self.editInfo.eventRef, changes)
+function st:onEventCreated(ev)
+	if self.markerColors[ev.type] ~= nil then
+		self:resetMarkers()
+		self:selectSingle('marker', ev)
+	elseif self.decoTypes[ev.type] then
+		self:resetDecoEvents(ev.type, ev.id)
+		self:selectSingle('keyframe', ev)
+	else
+		self:resetLoads()
 	end
 end
 
-function st:getMarkerInstances(markerType)
-	local base = self.markersByType[markerType]
-	if not base then return nil end
-	local key = 'm:' .. markerType
-	local out = self.instanceCache[key]
-	if not out then
-		out = expandRepeats(base)
-		self.instanceCache[key] = out
-	end
-	return out
+-- problems / logging
+function st:addLoadProblem(category, key, message, ev, kind)
+	table.insert(self.loadProblems, { category = category, key = key, message = message, ev = ev, kind = kind })
+end
+function st:clearProblems()
+	self.problemList = {}
+	self.problemSeen = {}
 end
 
-function st:getKeyframeInstances(decoKey, deco)
-	local key = 'k:' .. decoKey
-	local out = self.instanceCache[key]
-	if not out then
-		out = expandRepeats(deco.events)
-		self.instanceCache[key] = out
+function st:reportLoadProblems()
+	for _, lp in ipairs(self.loadProblems) do
+		self:reportProblem(lp.category, lp.key, lp.message, lp.ev, lp.kind)
 	end
-	return out
+end
+function st:reportProblem(category, key, message, ev, kind)
+	local id = category .. '|' .. tostring(key)
+	if self.problemSeen[id] then return end
+	self.problemSeen[id] = true
+	table.insert(self.problemList, { category = category, message = message, ev = ev, kind = kind })
+end
+function st:logError(category, message)
+	message = tostring(message)
+	local hist = self.errorHistory
+	for i = #hist, math.max(1, #hist - 20), -1 do
+		local h = hist[i]
+		if h.category == category and h.message == message then
+			h.count = h.count + 1
+			h.beat = self.editorBeat
+			return
+		end
+	end
+	table.insert(hist, { category = category, message = message, count = 1, beat = self.editorBeat })
+	if #hist > 100 then table.remove(hist, 1) end
+	log(category .. ': ' .. message, 'error')
+end
+
+function st:playbackError(message)
+	self:logError('Playback', message)
+end
+
+function st:describeVarProblem(var, expected)
+	expected = expected or 'number'
+	if type(var) ~= 'string' or var == '' then
+		return "no variable set"
+	end
+	local target, field = self:resolveVarTarget(var)
+	if not target then
+		return "path doesn't resolve (no numeric parts, and every parent must exist)"
+	end
+	if target[field] == nil and expected == 'number' then
+		return "'" .. field .. "' doesn't exist"
+	end
+	return "'" .. field .. "' is a " .. type(target[field]) .. ", expected a " .. expected
+end
+
+-- loading / rebuilding
+function st:loadCanvases(defs)
+	local old = self.vfx.canvas or {}
+	local new = {}
+	
+	for _, v in ipairs(defs) do
+		local id = v.id
+		if type(id) ~= 'string' or id == '' then
+			self:addLoadProblem('Canvas', 'noid:' .. tostring(v.time),
+				'New canvas at beat ' .. tostring(v.time) .. ' has no id', v, 'marker')
+		elseif new[id] then
+			self:addLoadProblem('Canvas', 'dup:' .. id,
+				'Canvas "' .. id .. '" is defined more than once (only the first one is used)', v, 'marker')
+		else
+			local w = math.floor(tonumber(v.width) or 600)
+			local h = math.floor(tonumber(v.height) or 360)
+			if w < 1 or h < 1 or w > maxCanvasSize or h > maxCanvasSize then
+				self:addLoadProblem('Canvas', 'size:' .. id,
+					'Canvas "' .. id .. '" has an invalid size (' .. w .. 'x' .. h .. '), it has to be 1-' .. maxCanvasSize,
+					v, 'marker')
+			else
+				local prev = old[id]
+				if prev and prev.width == w and prev.height == h then
+					new[id] = prev
+				else
+					local ok, canv = pcall(function() return Canvas:new({ width = w, height = h }) end)
+					if ok and canv then
+						new[id] = canv
+					else
+						self:addLoadProblem('Canvas', 'make:' .. id,
+							'Could not create canvas "' .. id .. '": ' .. tostring(canv), v, 'marker')
+					end
+				end
+			end
+		end
+	end
+	
+	self.vfx.canvas = new
 end
 
 function st:resetMarkers()
+	self.drawDecos = true
+	self.loadProblems = {}
+	for _, d in pairs(self.decoObjects) do
+		if d.kind == 'deco' then d.hasMoved = false end
+	end
 	self.instanceCache = {}
 	self.playEvents = {}
 	self.markers = {}
 	self.markersByType = {}
-	self.timingInfo.timingPoints = {}
+	
+	local canvasDefs = {}
+	local aftIds, stampIds = {}, {}
 	
 	for _, v in ipairs(self.level.events) do
 		if self.markerColors[v.type] then
 			table.insert(self.markers, v)
 			
-			if loadTheseMarkers[v.type] then
-				if Event.onLoad[v.type](v) then
+			if v.type == 'newCanvas' then
+				table.insert(canvasDefs, v)
+			elseif loadTheseMarkers[v.type] and Event.onLoad[v.type] then
+				-- no more no drawing from one bad event
+				local ok, failed = pcall(Event.onLoad[v.type], v)
+				local name = Event.info[v.type] and Event.info[v.type].name or v.type
+				if not ok then
+					self:logError('Load', tostring(failed))
+					self:addLoadProblem('Load', v.type .. ':' .. tostring(v.time),
+						name .. ' at beat ' .. tostring(v.time) .. ' failed to load: ' .. tostring(failed), v, 'marker')
+				elseif failed then
 					self.drawDecos = false
+					self:addLoadProblem('Load', v.type .. ':' .. tostring(v.time),
+						name .. ' at beat ' .. tostring(v.time) .. ' failed to load, decos won\'t draw until it is fixed (see the history below)',
+						v, 'marker')
 				end
 			end
-			if v.type == 'play' then
-				self.timingInfo.initial = {bpm = v.bpm, timeOffsetSeconds = v.offset, beatOffset = v.time}
-			elseif v.type == 'setBPM' then
-				table.insert(self.timingInfo.timingPoints, {beat = v.time, bpm = v.bpm or 100})
+			if v.type == 'aft' then
+				aftIds[v.id or ''] = true
+			elseif v.type == 'stamp' then
+				stampIds[v.canvasID or ''] = true
 			end
 		end
 	end
 	
-	table.sort(self.markers, eventSort)
-	table.sort(self.timingInfo.timingPoints, function(a, b) return a.beat < b.beat end)
+	self:loadCanvases(canvasDefs)
+	for id in pairs(self.vfx.aft or {}) do
+		if not aftIds[id] then self.vfx.aft[id] = nil end
+	end
+	for id in pairs(self.vfx.stampCanvases or {}) do
+		if not stampIds[id] then self.vfx.stampCanvases[id] = nil end
+	end
+	
+	sortEvents(self.markers)
 	for _, m in ipairs(self.markers) do
 		if not self.markersByType[m.type] then
 			self.markersByType[m.type] = {}
 		end
 		table.insert(self.markersByType[m.type], m)
 	end
+	
+	self:rebuildTimingInfo()
+	self.lastCanvBeat = -math.huge
+end
+
+function st:rebuildTimingInfo()
+	local info = self.timingInfo
+	info.timingPoints = {}
+	for _, v in ipairs(self.markersByType.play or {}) do
+		info.initial = {bpm = v.bpm, timeOffsetSeconds = v.offset, beatOffset = v.time}
+	end
+	for _, v in ipairs(self.markersByType.setBPM or {}) do
+		table.insert(info.timingPoints, {beat = v.time, bpm = v.bpm or 100})
+	end
+	table.sort(info.timingPoints, function(a, b) return a.beat < b.beat end)
 end
 
 function st:resetDecos()
@@ -1001,8 +1252,11 @@ function st:resetDecos()
 				self.decos[key] = { order = index, events = {}, kind = v.type, id = v.id }
 			end
 			table.insert(self.decos[key].events, v)
-			table.sort(self.decos[key].events, eventSort)
 		end
+	end
+	
+	for _, d in pairs(self.decos) do
+		sortEvents(d.events)
 	end
 	
 	self.rowsDirty = true
@@ -1034,33 +1288,68 @@ function st:resetDecoEvents(decoType, decoId)
 		return
 	end
 	
-	table.sort(events, eventSort)
+	sortEvents(events)
 	
 	self.decos[key] = self.decos[key] or { order = firstIndex, kind = decoType, id = decoId }
 	self.decos[key].events = events
-	
 	self.rowsDirty = true
 	self.definedDecoIds = nil
 end
 
-function st:restoreEaseBases(keep)
-	for key, entry in pairs(self.easeBases) do
-		if not (keep and keep[key]) then
-			entry.target[entry.field] = entry.value
-			self.easeBases[key] = nil
-		end
-	end
+function st:runDecoOnLoad(v)
+	local ok, err = pcall(Event.onLoad[v.type], v)
+	if not ok then self:logError('Load', tostring(err)) end
 end
 
 function st:resetLoads()
 	self:restoreEaseBases()
+	self:restoreBoolBases()
 	self.failedSprites = {}
 	self.failedAssets = {}
 	self.drawDecos = true
 	self.gm:resetLevel() -- need to see if anything gets messed up, i dont think it should but you never know
 	self:resetMarkers()
 	self:resetDecos()
+	self.lastCanvBeat = -math.huge
 	self:updateCanvs()
+end
+
+function st:rebuildDecoObjects()
+	local oldp_actualX = self.p._actualX
+	local oldp_actualY = self.p._actualY
+	em.clear()
+	self.p = em.init('Player')
+	self.p._actualX = oldp_actualX
+	self.p._actualY = oldp_actualY
+	self.decoObjects = {}
+	self.vfx.deco = {}
+	self.vfx.textdeco = {}
+	self.vfx.camera3d = {}
+	self.vfx.deco3d = {}
+	self.renderDecos = {}
+	print("KILLED EVERYTHING")
+	--print(self.gm)
+	--print(self.cmd)
+	-- i wonder why gm is still here along with cmd
+	-- oh well
+end
+
+function st:pruneDecoObjects()
+	for k, obj in pairs(self.decoObjects) do
+		local d = self.decos[k]
+		if not d or #d.events == 0 then
+			obj.delete = true
+			self.decoObjects[k] = nil
+			self.renderDecos[k] = nil
+			local tbl = decoVfxTables[obj.kind]
+			if tbl and self.vfx[tbl] then
+				local id = k:sub(#tbl + 2)
+				if self.vfx[tbl][id] == obj then
+					self.vfx[tbl][id] = nil
+				end
+			end
+		end
+	end
 end
 
 function st:rebuildTimelineRows()
@@ -1071,161 +1360,6 @@ function st:rebuildTimelineRows()
 	table.sort(rows, function(a, b) return a.order < b.order end)
 	self.timelineRows = rows
 	self.rowsDirty = false
-end
-
-function st:addKeybind(func, name, k1, k2, k3)
-	table.insert(self.keybinds, { func = func, name = name, k1 = k1, k2 = k2, k3 = k3 })
-end
-
-function st:checkKeybinds()
-	for i, v in ipairs(self.keybinds) do
-		if v.k1 and v.k2 and v.k3 then
-			if maininput:down(v.k1) and maininput:down(v.k2) and maininput:pressed(v.k3) then
-				log('pressed keybind ' .. v.name,'keditor')
-				v.func()
-			end
-		elseif v.k1 and v.k2 then
-			if maininput:down(v.k1) and maininput:pressed(v.k2) then
-				log('pressed keybind ' .. v.name,'keditor')
-				v.func()
-			end
-		else
-			if maininput:pressed(v.k1) then
-				log('pressed keybind ' .. v.name,'keditor')
-				v.func()
-			end
-		end
-	end
-end
-
-function st:leave()
-	em.clear()
-	self.gm:stopLevel()
-	self.gm:resetLevel()
-	
-	if self.source and self.source.isPlaying then
-		self.source:stop()
-	end
-	
-	if savedata.options.game.customCursorInMenu and (savedata.options.game.cursorMode ~= "default") then
-		love.mouse.setVisible(false)
-	end
-	mouse.hidden = false
-	cs = bs.load("Editor")
-	cs:init()
-end
-
-function st:getBeatSnapValue()
-	return self.beatSnapValues[self.beatSnap] or self.customBeatSnap
-end
-
-function st:getBeatStep()
-	local beatStep = 1
-	if self.beatSnap ~= 0 then
-		local snapValue = self:getBeatSnapValue()
-		beatStep = 1 / snapValue
-	end
-	return beatStep
-end
-
-function st:getAngleSnapValue()
-	return 360/16
-end
-
-function st:deleteSelectedEvents()
-	local list = self:getEList(self.selectedEvents)
-	if #list > 0 then
-		if #list > 1 then
-			self.cmd:startGroup()
-			self.cmd:executeNew(cmd.RemoveMultiple, list)
-			self.cmd:endGroup("Deleted "..#list.." events")
-		else
-			self.cmd:executeNew(cmd.RemoveEvent, list[1])
-		end
-		
-		self:clearSelection()
-		self:resetLoads()
-	else
-		print("nothing selected?")
-	end
-end
-function st:clearSelection()
-	self.selectedEvents = { events = {} }
-end
-function st:selectSingle(kind, obj)
-	self.selectedEvents = { events = { [obj] = kind } }
-end
-function st:addSelect(kind, obj)
-	self.selectedEvents.events[obj] = kind
-end
-function st:isSelected(kind, obj)
-	return self.selectedEvents.events[obj] == kind
-end
-function st:getSelectedFromGroup(kind, group)
-	for _, ev in ipairs(group) do
-		if self:isSelected(kind, ev) then
-			return ev
-		end
-	end
-	return nil
-end
-function st:getFirstOfEList(list)
-	local obj, kind = next(list.events)
-	return obj, kind
-end
-function st:getEList(list, kind)
-	local out = {}
-	for obj, k in pairs(list.events) do
-		if not kind or k == kind then
-			out[#out + 1] = obj
-		end
-	end
-	return out
-end
-function st:getEListCount(list, kind)
-	local count = 0
-	for obj, k in pairs(list.events) do
-		if not kind or k == kind then
-			count = count + 1
-		end
-	end
-	return count
-end
-
-function st:clearMultiselectVars()
-	self:clearSelection()
-end
-
-function st:playbackError(message)
-	self:logError('Playback', message)
-end
-
-function st:clearProblems()
-	self.problemList = {}
-	self.problemSeen = {}
-end
-
-function st:reportProblem(category, key, message, ev, kind)
-	local id = category .. '|' .. tostring(key)
-	if self.problemSeen[id] then return end
-	self.problemSeen[id] = true
-	table.insert(self.problemList, { category = category, message = message, ev = ev, kind = kind })
-end
-
-function st:logError(category, message)
-	message = tostring(message)
-	local hist = self.errorHistory
-	for i = #hist, math.max(1, #hist - 20), -1 do
-		local h = hist[i]
-		if h.category == category and h.message == message then
-			h.count = h.count + 1
-			h.beat = self.editorBeat
-			return
-		end
-	end
-	table.insert(hist, { category = category, message = message, count = 1, beat = self.editorBeat })
-	if #hist > 100 then table.remove(hist, 1) end
-	log(category .. ': ' .. message, 'error')
 end
 
 function st:getDefinedDecoIds()
@@ -1241,33 +1375,215 @@ function st:getDefinedDecoIds()
 	return set
 end
 
-function st:runDecoOnLoad(v)
-	local ok, err = pcall(Event.onLoad[v.type], v)
-	if not ok then self:logError('Load', tostring(err)) end
+function st:resortEvents()
+	for _, d in pairs(self.decos) do
+		sortEvents(d.events)
+	end
+	sortEvents(self.markers)
+	for _, list in pairs(self.markersByType) do
+		sortEvents(list)
+	end
+	self.instanceCache = {}
 end
 
-function st:describeVarProblem(var, expected)
-	expected = expected or 'number'
-	if type(var) ~= 'string' or var == '' then
-		return "no variable set"
+local function structureSig(list)
+	local h = #list
+	for i = 1, #list do
+		local e = list[i]
+		h = (h * 31 + (e.time or 0) * 1009 + (e.order or 0) * 17 + (type(e.repeats) == 'number' and e.repeats or 0) * 7 + (type(e.repeatDelay) == 'number' and e.repeatDelay or 0) * 13) % 4294967291
 	end
-	local target, field = self:resolveVarTarget(var)
-	if not target then
-		return "path doesn't resolve (no numeric parts, and every parent must exist)"
-	end
-	if target[field] == nil and expected == 'number' then
-		return "'" .. field .. "' doesn't exist"
-	end
-	return "'" .. field .. "' is a " .. type(target[field]) .. ", expected a " .. expected
+	return h
 end
 
+function st:getCachedInstances(key, base)
+	local entry = self.instanceCache[key]
+	local sig = structureSig(base)
+	if not entry or entry.base ~= base or entry.sig ~= sig then
+		entry = { base = base, sig = sig, out = expandRepeats(base) }
+		self.instanceCache[key] = entry
+	end
+	return entry.out
+end
+
+function st:getMarkerInstances(markerType)
+	local base = self.markersByType[markerType]
+	if not base then return nil end
+	return self:getCachedInstances('m:' .. markerType, base)
+end
+
+function st:getKeyframeInstances(decoKey, deco)
+	return self:getCachedInstances('k:' .. decoKey, deco.events)
+end
+
+-- assets
+function st:assetBasePath(name)
+	if name:sub(1, 1) == '~' then
+		local sub = name:sub(2)
+		local file = 'levels/' .. sub
+		if love.filesystem.getInfo(file) then
+			local real = love.filesystem.getRealDirectory(file)
+			if real and helpers.startswith(real, love.filesystem.getSaveDirectory()) then
+				return 'levels/', sub, 'attempted to access file outside game source'
+			end
+		end
+		return 'levels/', sub
+	end
+	return cLevel, name
+end
+
+function st:ensureAssetLoaded(kind, name, texName)
+	if type(name) ~= 'string' or name == '' then return true end
+	if kind == 'texture' and name:sub(1, 1) == '@' then return true end
+	
+	local store = (kind == 'texture') and self.vfx.textures or self.vfx.models
+	if store[name] then return true end
+	
+	local key = kind .. ':' .. name
+	if self.failedAssets[key] then return false end
+	
+	local path, field, blocked = self:assetBasePath(name)
+	local ok, err = pcall(function()
+		if blocked then error(blocked) end
+		local fpath = path .. field
+		if kind == 'texture' then
+			store[name] = love.graphics.newImage(fpath)
+		else
+			local tex = Deco3D.static.defaultTexture
+			if texName then
+				tex = self.vfx.textures[texName] or tex
+			end
+			store[name] = g3d.newModel(fpath, tex, {0, 1, 0}, nil, 1)
+		end
+	end)
+	
+	if not ok then
+		self.failedAssets[key] = tostring(err)
+		log('Could not load deco3d ' .. kind .. ' "' .. name .. '"', 'keditor')
+		return false
+	end
+	return true
+end
+
+function st:ensureSpriteLoaded(sprite)
+	if type(sprite) ~= 'string' or sprite == '' then
+		return true
+	end
+	
+	if sprite:sub(1, 1) == '@' then
+		local vfx = self.vfx
+		if sprite:sub(1, 4) == '@aft' then
+			return (vfx.aft and vfx.aft[sprite:sub(5)]) ~= nil
+		elseif sprite:sub(1, 6) == '@stamp' then
+			return (vfx.stampCanvases and vfx.stampCanvases[sprite:sub(7)]) ~= nil
+		elseif sprite:sub(1, 7) == '@canvas' then
+			return (vfx.canvas and vfx.canvas[sprite:sub(8)]) ~= nil
+		end
+		return true
+	end
+	
+	if self.failedSprites[sprite] then
+		return false
+	end
+	
+	local template, animation, frame = parseSprite(sprite)
+	local path, field, blocked = self:assetBasePath(sprite)
+	local ok, err = pcall(function()
+		if blocked then error(blocked) end
+		if not template then
+			if not self.vfx.decoSprites[sprite] then
+				self.vfx.decoSprites[sprite] = love.graphics.newImage(path .. field)
+			end
+		else
+			if not self.vfx.decoTemplates[template] then
+				self.vfx.decoTemplates[template] = ez.newjson(path .. template)
+			end
+			local inst = self.vfx.decoTemplates[template]:instance()
+			if animation then
+				inst:play(animation, tonumber(frame))
+			end
+		end
+	end)
+	
+	if not ok then
+		self.failedSprites[sprite] = tostring(err)
+		log('Could not load deco sprite "' .. sprite .. '"', 'keditor')
+		return false
+	end
+	return true
+end
+
+function st:ensurePlayerFace(name)
+	local p = self.p
+	if p.spr[name] ~= nil or p.faceIndex[name] ~= nil then
+		return true
+	end
+	if name:lower():sub(-4) ~= '.png' then
+		return false
+	end
+	local cached = self.playerFaceCache[name]
+	if cached == nil then
+		cached = false
+		local filename = cLevel .. name
+		if love.filesystem.getInfo(filename) then
+			local ok, img = pcall(love.graphics.newImage, filename)
+			if ok then cached = img end
+		end
+		self.playerFaceCache[name] = cached
+	end
+	if cached then
+		p.spr[name] = cached
+		return true
+	end
+	return false
+end
+
+function st:updateDecoSprite(deco)
+	local sprite = deco.sprite
+	local template, animation, frame, speed = nil, nil, nil, nil
+	
+	if sprite ~= nil and sprite ~= '' and string.sub(sprite, 1, 1) ~= '@' then
+		if not self:ensureSpriteLoaded(sprite) then
+			return false
+		end
+		template, animation, frame, speed = parseSprite(sprite)
+	end
+	
+	if template and self.vfx.decoTemplates[template] then
+		deco.anim = self.vfx.decoTemplates[template]:instance()
+		if animation then
+			deco.anim:play(animation, tonumber(frame))
+			deco.animSpeed = tonumber(speed)
+			deco.animFrame = nil
+		else
+			deco.animSpeed = nil
+			
+			local f = frame
+			if f == 'RANDOM' and self.vfx.decoTemplates[template].frames > 1 then
+				f = ((deco.animFrame or 0) + math.random(1, self.vfx.decoTemplates[template].frames - 1)) % self.vfx.decoTemplates[template].frames
+			elseif f == 'RANDOM' then
+				f = deco.animFrame or 0 -- only one frame so nothing to randomize
+			elseif f == 'TRUERANDOM' then
+				f = math.random(0, self.vfx.decoTemplates[template].frames - 1)
+			end
+			
+			deco.animFrame = tonumber(f)
+		end
+	else
+		deco.anim = nil
+		deco.animSpeed = nil
+		deco.animFrame = nil
+	end
+	return true
+end
+
+-- timing
 function st:getRetimeOffset(beat)
 	local offset = 0
 	local retimes = self:getMarkerInstances('retime')
 	if not retimes then return offset end
 	for _, m in ipairs(retimes) do
 		if beat > m.time then
-			offset = offset + m.offset
+			offset = offset + (m.offset or 0)
 		end
 	end
 	return offset
@@ -1275,14 +1591,15 @@ end
 
 function st:getBPMAtBeat(beat)
 	local bpm = self.baseBpm or 100
-	local bestTime = -math.huge
+	local bestTime, bestOrder = -math.huge, 0
 	
 	local function scan(list)
 		if not list then return end
 		for _, m in ipairs(list) do
 			if m.bpm and m.time <= beat then
-				if m.time > bestTime then
-					bestTime = m.time
+				local o = m.order or 0
+				if m.time > bestTime or (m.time == bestTime and o < bestOrder) then -- lower order wins
+					bestTime, bestOrder = m.time, o
 					bpm = m.bpm
 				end
 			end
@@ -1297,13 +1614,155 @@ function st:getBPMAtBeat(beat)
 	return bpm
 end
 
+-- editing (g/s/r, dragging, mod menus)
+
+function st:setEditInfo()
+	local list = self:getEList(self.selectedEvents, 'keyframe')
+	if #list == 0 then return false end
+	
+	local prevBeat = self.editorBeat
+	local endBeat = -math.huge
+	for _, ev in ipairs(list) do
+		local evEnd = ev.time + (ev.duration or 0)
+		if evEnd > endBeat then
+			endBeat = evEnd
+		end
+	end
+	self.editorBeat = endBeat
+	
+	self:updateDecos()
+	
+	local deco, eventRef, kind
+	for _, ev in ipairs(list) do
+		local key = ev.type .. ":" .. ev.id
+		local d = self.decoObjects[key]
+		if d then
+			deco = d
+			eventRef = ev
+			kind = ev.type
+			break
+		end
+	end
+	
+	if not deco then
+		self.editorBeat = prevBeat
+		print("couldn't find the deco to edit")
+		return false
+	end
+	
+	local shuvState = shuv.usePalette
+	if self.editMode ~= 'none' and self.editInfo.shuvState ~= nil then
+		shuvState = self.editInfo.shuvState
+	end
+	
+	local editProps = decoEditProps[kind] or decoEditProps.deco
+	self.editInfo = {
+		multiEdit = (#list > 1),
+		startMouseX = mouse.rx + self.pan[1],
+		startMouseY = mouse.ry + self.pan[2],
+		startMouseRawX = mouse.rx,
+		startMouseRawY = mouse.ry,
+		decoRef = deco,
+		eventRef = eventRef,
+		editProps = editProps,
+		shuvState = shuvState,
+		is3D = (kind == 'camera3d') or (kind == 'deco3d')
+	}
+	
+	if deco then
+		for _, suf in ipairs(editProps) do
+			self.editInfo['start' .. suf] = deco[editSuffixToProp[suf]]
+		end
+	end
+	
+	shuv.usePalette = false
+	return true
+end
+
+function st:confirmEdit() -- i honestly don't know if i actually want to do multiselect
+	if self.editMode == "none" then return end
+	
+	self.editMode = "none"
+	self.lockedAxis = "none"
+	shuv.usePalette = self.editInfo.shuvState
+	
+	local changes = {}
+	local hasChanges = false
+	for _, suf in ipairs(self.editInfo.editProps or {}) do
+		local prop = editSuffixToProp[suf]
+		local val = self.editInfo[prop]
+		if val ~= nil then
+			changes[prop] = val
+			hasChanges = true
+		end
+	end
+	if hasChanges then
+		self.cmd:executeNew(cmd.ModifyKeys, self.editInfo.eventRef, changes)
+	end
+end
+
+function st:commitDragTimes()
+	if not self.dragStartTimes then return end
+	
+	local changed = {}
+	for ev, startTime in pairs(self.dragStartTimes) do
+		if ev.time ~= startTime then
+			changed[#changed + 1] = { ev = ev, newTime = ev.time }
+			ev.time = startTime
+		end
+	end
+	
+	if #changed > 0 then
+		if #changed > 1 then
+			self.cmd:startGroup()
+			for _, c in ipairs(changed) do
+				self.cmd:executeNew(cmd.ModifyKeys, c.ev, { time = c.newTime })
+			end
+			self.cmd:endGroup("Moved "..#changed.." events")
+		else
+			self.cmd:executeNew(cmd.ModifyKeys, changed[1].ev, { time = changed[1].newTime })
+		end
+		
+		self:resortEvents()
+		
+		for _, c in ipairs(changed) do
+			if timingTypes[c.ev.type] then
+				self:rebuildTimingInfo()
+				break
+			end
+		end
+		
+		for _, c in ipairs(changed) do
+			if reloadOnEditTypes[c.ev.type] then
+				self:resetLoads()
+				break
+			end
+		end
+	end
+	
+	self.dragStartTimes = nil
+end
+
+function st:setModMenuEnabled(k, name, value)
+	self.enabledModEMenus[k] = self.enabledModEMenus[k] or {}
+	if self.enabledModEMenus[k][name] ~= value then
+		self.enabledModEMenus[k][name] = value
+		keyedConfig.enabledModEMenus = self.enabledModEMenus
+		bbp.utils.saveConfig("keyed")
+	end
+end
+
+-- things that update stuff
 function st:setOutline()
-	local bestTime = -math.huge
+	self.outline = nil
+	local bestTime, bestOrder = -math.huge, 0
 	local outlines = self:getMarkerInstances('outline')
 	if not outlines then return end
 	for _, m in ipairs(outlines) do
 		if m.time <= self.editorBeat then
-			if m.time > bestTime then
+			local o = m.order or 0
+			if m.time > bestTime or (m.time == bestTime and o < bestOrder) then -- lower order wins
+				bestTime, bestOrder = m.time, o
 				if m.enable == false then
 					self.outline = nil
 				else
@@ -1317,13 +1776,14 @@ end
 function st:setBGColor()
 	local color = 0
 	local vcolor = nil
-	local bestTime = -math.huge
+	local bestTime, bestOrder = -math.huge, 0
 	local bgColors = self:getMarkerInstances('setBgColor')
 	if bgColors then
 		for _, m in ipairs(bgColors) do
 			if m.time <= self.editorBeat then
-				if m.time > bestTime then
-					bestTime = m.time
+				local o = m.order or 0
+				if m.time > bestTime or (m.time == bestTime and o < bestOrder) then -- lower order wins
+					bestTime, bestOrder = m.time, o
 					color = m.color
 					vcolor = m.voidColor
 				end
@@ -1334,42 +1794,86 @@ function st:setBGColor()
 	self.voidColor = vcolor or self.voidColor
 end
 
+function st:rewindCanvases()
+	local vfx = self.vfx
+	for _, canv in pairs(vfx.stampCanvases or {}) do
+		clearCanvas(canv)
+	end
+	for _, a in pairs(vfx.aft or {}) do
+		clearCanvas(a.canvas)
+		a.enabled = false
+		a.time = 0
+	end
+	for _, c in pairs(vfx.canvas or {}) do
+		clearCanvas(c.c)
+		clearCanvas(c.sb)
+	end
+end
+
 function st:updateCanvs()
-	self:updateStamps()
-	self:updateAfts()
+	local now = self.editorBeat
+	local from = self.lastCanvBeat or -math.huge
+	
+	if now < from - 0.0001 then
+		self:rewindCanvases()
+		from = -math.huge
+	end
+	
+	for _, kind in ipairs({ 'stamp', 'aft' }) do
+		local list = self:getMarkerInstances(kind)
+		if list then
+			for _, m in ipairs(list) do
+				if m.time > now then break end
+				if m.time > from then
+					local ok, err = pcall(Event.onBeat[kind], m)
+					if not ok then
+						self:logError('Canvas', (Event.info[kind] and Event.info[kind].name or kind) ..
+							' at beat ' .. tostring(m.time) .. ': ' .. tostring(err))
+					end
+				end
+			end
+		end
+	end
+	
+	self.lastCanvBeat = now
 end
 
-function st:updateStamps()
-	local stamps = self:getMarkerInstances('stamp')
-	if not stamps then return end
+function st:updateEditCanvases()
+	local canvases = self.vfx.canvas
+	if not canvases then return end
 	
-	if self.editorBeat < (self.lastEditorBeat) - 0.0001 then
-		for _, canv in pairs(self.vfx.stampCanvases) do
-			canv:renderTo(function() love.graphics.clear() end)
-		end
+	for _, c in pairs(canvases) do
+		c.clearColor = -1
+		c.doClear = true
 	end
 	
-	for _, m in ipairs(stamps) do
-		if m.time > self.lastEditorBeat and m.time <= self.editorBeat then
-			Event.onBeat.stamp(m)
+	local edits = self:getMarkerInstances('editCanvas')
+	if not edits then return end
+	for _, m in ipairs(edits) do
+		if m.time > self.editorBeat then break end
+		local c = canvases[m.id]
+		if c then
+			if m.clearColor ~= nil then c.clearColor = m.clearColor end
+			if m.doClear ~= nil then c.doClear = m.doClear end
+		else
+			local src = m.source or m
+			self:reportProblem('Canvas', 'editCanvas:' .. tostring(m.id),
+				'Edit Canvas at beat ' .. tostring(m.time) .. ': canvas "' .. tostring(m.id) .. '" doesn\'t exist', src, 'marker')
 		end
 	end
 end
 
-function st:updateAfts()
-	local afts = self:getMarkerInstances('aft')
-	if not afts then return end
-	
-	if self.editorBeat < (self.lastEditorBeat) - 0.0001 then
-		for _, canv in pairs(self.vfx.aft) do
-			canv.canvas:renderTo(function() love.graphics.clear() end)
-		end
-	end
-	
-	for _, m in ipairs(afts) do
-		if m.time > self.lastEditorBeat and m.time <= self.editorBeat then
-			Event.onBeat.aft(m)
-		end
+function st:applyRenderCanvas(obj, name, ev, kind, who)
+	obj.renderCanvas = nil
+	obj.renderCanvasObject = nil
+	if name == nil or name == '' then return end
+	local canv = self.vfx.canvas and self.vfx.canvas[name]
+	if canv then
+		obj.renderCanvas = canv.c
+		obj.renderCanvasObject = canv
+	else
+		self:reportProblem('Canvas', 'use:' .. tostring(who) .. ':' .. tostring(name),
+			tostring(who) .. ': canvas "' .. tostring(name) .. '" doesn\'t exist', ev, kind)
 	end
 end
 
@@ -1412,6 +1916,15 @@ function st:resolveVarTarget(var)
 	return target, field
 end
 
+function st:restoreEaseBases(keep)
+	for key, entry in pairs(self.easeBases) do
+		if not (keep and keep[key]) then
+			entry.target[entry.field] = entry.value
+			self.easeBases[key] = nil
+		end
+	end
+end
+
 function st:updateEases()
 	local easeMarkers = self:getMarkerInstances('ease')
 	if not easeMarkers then
@@ -1432,7 +1945,7 @@ function st:updateEases()
 			end
 		end
 	end
-	table.sort(instances, eventSort)
+	sortEvents(instances)
 	
 	local groups, groupOrder = {}, {}
 	for _, inst in ipairs(instances) do
@@ -1480,9 +1993,21 @@ function st:updateEases()
 	self:restoreEaseBases(groups)
 end
 
+function st:restoreBoolBases(keep)
+	for key, entry in pairs(self.boolBases) do
+		if not (keep and keep[key]) then
+			entry.target[entry.field] = entry.value
+			self.boolBases[key] = nil
+		end
+	end
+end
+
 function st:updateSetBooleans()
 	local boolMarkers = self:getMarkerInstances('setBoolean')
-	if not boolMarkers then return end
+	if not boolMarkers then
+		self:restoreBoolBases()
+		return
+	end
 	
 	local latestByVar = {}
 	for _, m in ipairs(boolMarkers) do
@@ -1490,7 +2015,7 @@ function st:updateSetBooleans()
 			local existing = latestByVar[m.var]
 			if not existing
 				or m.time > existing.time
-				or (m.time == existing.time and (m.order or 0) >= (existing.order or 0)) then
+				or (m.time == existing.time and (m.order or 0) < (existing.order or 0)) then -- lower order wins
 				latestByVar[m.var] = m
 			end
 		end
@@ -1500,19 +2025,27 @@ function st:updateSetBooleans()
 		local target, field = self:resolveVarTarget(var)
 		local existing = target and target[field]
 		if target and (existing == nil or type(existing) == 'boolean') then -- ...
+			local entry = self.boolBases[var]
+			if not entry or entry.target ~= target or entry.field ~= field then
+				entry = { target = target, field = field, value = existing }
+				self.boolBases[var] = entry
+			end
 			target[field] = m.enable
 		else
 			local src = m.source or m
 			self:reportProblem('Boolean', src, 'setBoolean on "' .. var .. '": ' .. self:describeVarProblem(var, 'boolean'), src, 'marker')
 		end
 	end
+	
+	self:restoreBoolBases(latestByVar)
 end
 
 function st:updatePlayer()
 	if not self.p then
 		return
 	end
-	local numPaddles = #self.p.paddles
+	local p = self.p
+	local numPaddles = #p.paddles
 	
 	local paddleEvents = {}
 	local paddleMarkers = self:getMarkerInstances('paddles')
@@ -1524,13 +2057,32 @@ function st:updatePlayer()
 		end
 	end
 	
+	local pdBase = p._keyedPaddleDistance
+	if pdBase == nil then
+		pdBase = p.paddleDistance or 0
+		p._keyedPaddleDistance = pdBase
+	end
+	local distanceEvents = {}
+	for _, e in ipairs(paddleEvents) do
+		if e.newDistance ~= nil then
+			table.insert(distanceEvents, e)
+		end
+	end
+	if #distanceEvents > 0 then
+		p.paddleDistance = resolveEasedValue(distanceEvents, function(e) return e.newDistance end, pdBase, self.editorBeat)
+	else
+		p.paddleDistance = pdBase
+	end
+	
 	for i = 1, numPaddles do
-		local paddle = self.p.paddles[i]
+		local paddle = p.paddles[i]
 		local pbase = self.paddleBases[paddle]
 		if not pbase then
-			pbase = { baseAngle = paddle.baseAngle, paddleSize = paddle.paddleSize, paddleWidth = paddle.paddleWidth }
+			pbase = { baseAngle = paddle.baseAngle, paddleSize = paddle.paddleSize, paddleWidth = paddle.paddleWidth, enabled = paddle.enabled }
 			self.paddleBases[paddle] = pbase
 		end
+		
+		paddle.enabled = pbase.enabled
 		for _, e in ipairs(paddleEvents) do
 			if e.enabled ~= nil then
 				local paddleStart, paddleEnd = e.paddle, e.paddle
@@ -1543,7 +2095,7 @@ function st:updatePlayer()
 			end
 		end
 		
-		for _, prop in ipairs({ { key = 'newAngle', field = 'baseAngle' }, { key = 'newWidth', field = 'paddleSize' } }) do
+		for _, prop in ipairs(paddleProps) do
 			local proppaddleEvents = {}
 			for _, e in ipairs(paddleEvents) do
 				if e[prop.key] ~= nil then
@@ -1559,6 +2111,8 @@ function st:updatePlayer()
 			
 			if #proppaddleEvents > 0 then
 				paddle[prop.field] = resolveEasedValue(proppaddleEvents, function(e) return e[prop.key] end, pbase[prop.field] or 0, self.editorBeat)
+			else
+				paddle[prop.field] = pbase[prop.field]
 			end
 		end
 		
@@ -1570,10 +2124,77 @@ function st:updatePlayer()
 		end
 		if #heightpaddleEvents > 0 then
 			paddle.paddleWidth = resolveEasedValue(heightpaddleEvents, function(e) return e.newHeight end, pbase.paddleWidth or 0, self.editorBeat)
+		else
+			paddle.paddleWidth = pbase.paddleWidth
 		end
 	end
 	
-	self.p._actualX, self.p._actualY = self.p.x, self.p.y
+	p._actualX, p._actualY = p.x, p.y
+end
+
+function st:updatePlayerEdits()
+	local p = self.p
+	if not p then return end
+	
+	local base = p._keyedBase
+	if not base then
+		base = { layer = p.layer, shader = p.shader, forceSprite = p.forceSprite, useFaceStencil = p.useFaceStencil }
+		p._keyedBase = base
+	end
+	
+	p.layer = base.layer
+	p.shader = base.shader
+	p.forceSprite = base.forceSprite
+	p.useFaceStencil = base.useFaceStencil
+	p.renderCanvas = nil
+	p.renderCanvasObject = nil
+	
+	local edits = self:getMarkerInstances('forcePlayerSprite')
+	if not edits then return end
+	
+	for _, m in ipairs(edits) do
+		if m.time > self.editorBeat then break end
+		local src = m.source or m
+		local at = 'Edit Player at beat ' .. tostring(src.time)
+		local name = m.spriteName
+		if name ~= nil then
+			if name == '' or name == 'none' or self:ensurePlayerFace(name) then
+				p.forceSprite = name
+			else
+				self:reportProblem('Player', 'forcePlayerSprite:sprite:' .. tostring(src.time),
+					at .. ': player has no face sprite named "' .. name .. '"', src, 'marker')
+			end
+		end
+		if m.useFaceStencil ~= nil then
+			p.useFaceStencil = m.useFaceStencil
+		end
+		if m.shader ~= nil then
+			if m.shader == '' or self.vfx.decoShaders[m.shader] then
+				p.shader = m.shader
+			else
+				self:reportProblem('Player', 'forcePlayerSprite:shader:' .. tostring(src.time),
+					at .. ': deco shader "' .. m.shader .. '" doesn\'t exist', src, 'marker')
+			end
+		end
+		if m.canvas ~= nil then
+			if m.canvas == '' then
+				p.renderCanvas = nil
+				p.renderCanvasObject = nil
+			else
+				local canv = self.vfx.canvas and self.vfx.canvas[m.canvas]
+				if canv then
+					p.renderCanvas = canv.c
+					p.renderCanvasObject = canv
+				else
+					self:reportProblem('Player', 'forcePlayerSprite:canvas:' .. tostring(src.time),
+						at .. ': canvas "' .. m.canvas .. '" doesn\'t exist', src, 'marker')
+				end
+			end
+		end
+		if m.layer ~= nil then
+			p.layer = m.layer
+		end
+	end
 end
 
 function st:updateColorPalette()
@@ -1601,34 +2222,330 @@ function st:updateColorPalette()
 				end
 				
 				if #propEvents > 0 then
-					shuv.pal[idx][channel] = resolveEasedValue(propEvents, function(e) return e[channel] end, 0, self.editorBeat)
+					shuv.pal[idx][channel] = resolveEasedValue(propEvents, function(e) return e[channel] end, shuv.pal[idx][channel] or 0, self.editorBeat)
 				end
 			end
 		end
 	end
 end
 
-function st:rebuildDecoObjects()
-	local oldp_actualX = self.p._actualX
-	local oldp_actualY = self.p._actualY
-	em.clear()
-	self.p = em.init('Player')
-	self.p._actualX = oldp_actualX
-	self.p._actualY = oldp_actualY
-	self.decoObjects = {}
-	self.vfx.deco = {} 
-	self.vfx.textdeco = {} 
-	self.renderDecos = {}
-	print("KILLED EVERYTHING")
-	--print(self.gm)
-	--print(self.cmd)
-	-- i wonder why gm is still here along with cmd
-	-- oh well
+function st:updateAdvanceTextDecos()
+	local lastTextSetTime = {}
+	for k, v in pairs(self.decos) do
+		if v.kind == "textdeco" then
+			local latest = nil
+			for _, e in ipairs(self:getKeyframeInstances(k, v)) do
+				if e.textString ~= nil and e.time <= self.editorBeat then
+					if not latest or e.time > latest then
+						latest = e.time
+					end
+				end
+			end
+			lastTextSetTime[k] = latest or -math.huge
+		end
+	end
+	
+	local advanceCount = {}
+	
+	local function addTrigger(rawId, triggerTime)
+		local key = "textdeco:" .. rawId
+		local cutoff = lastTextSetTime[key]
+		if cutoff and triggerTime > cutoff then
+			advanceCount[key] = (advanceCount[key] or 0) + 1
+		end
+	end
+
+	local advanceMarkers = self:getMarkerInstances('advancetextdeco')
+	if advanceMarkers then
+		for _, m in ipairs(advanceMarkers) do
+			local t = m.time
+			if t <= self.editorBeat then
+				helpers.targetDecosUsingSyntaxicID(function(rawId)
+					addTrigger(rawId, t)
+				end, m.id)
+			end
+		end
+	end
+	
+	for k, deco in pairs(self.decoObjects) do
+		if deco.kind == "textdeco" and deco.textTable and #deco.textTable > 0 then
+			local target = math.min(1 + (advanceCount[k] or 0), #deco.textTable)
+			
+			local text = ""
+			for i = 1, target do
+				text = text .. deco.textTable[i]
+			end
+			
+			deco.textPos = target
+			deco.text = text
+		end
+	end
 end
 
+function st:updateDecos()
+	self.renderDecos = self.renderDecos or {}
+	self:pruneDecoObjects()
+	for k, v in pairs(self.decos) do -- will probably need to sort when tags are not ignored
+		if v.id == nil or v.id == '' then 
+			self:reportProblem('Deco', k, 'a deco keyframe has no id', v.events[1], 'keyframe')
+		end
+		if #v.events == 0 or self.editorBeat < v.events[1].time then
+			self.renderDecos[k] = nil
+			goto continue
+		end
+		
+		local isFirstOfID = false
+		local isText = v.kind == "textdeco"
+		local isCamera3D = v.kind == "camera3d"
+		local isDeco3D = v.kind == "deco3d"
+		
+		if not self.decoObjects[k] then
+			if isText then
+				self.decoObjects[k] = em.init('TextDeco', {})
+				self.decoObjects[k].kind = "textdeco"
+				self.vfx.textdeco[k:sub(10)] = self.decoObjects[k]
+			elseif isCamera3D then
+				self.decoObjects[k] = em.init('Camera3D', {})
+				self.decoObjects[k].kind = "camera3d"
+				self.vfx.camera3d[k:sub(10)] = self.decoObjects[k]
+			elseif isDeco3D then
+				self.decoObjects[k] = em.init('Deco3D', {})
+				self.decoObjects[k].kind = "deco3d"
+				self.vfx.deco3d[k:sub(8)] = self.decoObjects[k]
+			else
+				self.decoObjects[k] = em.init('Deco', {})
+				self.decoObjects[k].kind = "deco"
+				self.vfx.deco[k:sub(6)] = self.decoObjects[k]
+			end
+			
+			isFirstOfID = true
+		end
+		
+		local deco = self.decoObjects[k]
+		deco.skipUpdate = true
+		deco.skipRender = isDeco3D
+		
+		local instantProps = isText and instantPropsText
+			or isCamera3D and instantPropsCamera3D
+			or isDeco3D and instantPropsDeco3D
+			or instantPropsDeco
+		
+		local props = isText
+			and {'x','y','sx','sy','rotationinfluence','scaleinfluence','wrapLen','kx','ky','extraCharSpacing','r','kyFake',
+				'ditherpercent','drawLayer','drawOrder','recolor','outline','effectCanvas','effectCanvasRaw','hide','parentid',
+				'rotationMode','onlyScaleDistance','colour','justification', 'justificationy','font','alphadither','textString','localize',
+				'specialoutline','specialcolour','canvas','prefix'}
+			or isCamera3D and {'cx','cy','cz','tx','ty','tz','lookRadius','aspectRatio','fov','drawLayer','drawOrder','hide','canvas'}
+			or isDeco3D and {'x','y','z','sx','sy','sz','rx','ry','rz','model','texture','hide','camera','shader','cullMode'}
+			or  {'x','y','r','sx','sy','ox','oy','kx','ky', 'rotationinfluence','scaleinfluence','uvx','uvy','uvdx','uvdy',
+				 'ecRecolorR','ecRecolorG','ecRecolorB','ecRecolorA', 'sprite', 'drawLayer', 'drawOrder',
+				 'recolor', 'outline', 'effectCanvas', 'effectCanvasRaw','effectCanvasType', 'hide', 'parentid', 'rotationMode',
+				 'onlyScaleDistance','mirror','tiling', 'colordither','exclusiveMirror','shader', 'alphadither', 'ditherpercent',
+				 'canvas'}
+		
+		if isFirstOfID then
+			deco._baseProps = {}
+			for _, p in ipairs(props) do
+				deco._baseProps[p] = deco[p]
+			end
+			deco._trueHide = deco._baseProps['hide']
+		end
+		
+		local spriteChanged = false
+		local events = self:getKeyframeInstances(k, v)
+		
+		for _, p in ipairs(props) do
+			if (p == "uvx" or p == "uvy") and deco.tiling then
+				goto nextprop
+			end
+			
+			local propEvents = {}
+			for _, e in ipairs(events) do
+				if e[p] ~= nil and e.time <= self.editorBeat then
+					table.insert(propEvents, e)
+				end
+			end
+			if #propEvents == 0 then goto nextprop end
+			
+			local isInstantProp = instantProps[p]
+			local firstEvent = v.events[1]
+			
+			local newValue = resolveEasedValue(propEvents, function(e) return e[p] end,
+				deco._baseProps[p], self.editorBeat, {allowAdd = not isInstantProp, instant = function(e)
+					return isInstantProp or (e == firstEvent)
+				end})
+			
+			if p == "sprite" and newValue ~= deco.sprite then
+				if self:ensureSpriteLoaded(newValue) then
+					spriteChanged = true
+				else
+					self:reportProblem('Sprite', k,
+						'"' .. tostring(v.id) .. '": sprite "' .. tostring(newValue) .. '" failed to load'
+						.. (self.failedSprites[newValue] and (': ' .. self.failedSprites[newValue]) or ''),
+						propEvents[#propEvents], 'keyframe')
+					newValue = deco.sprite
+				end
+			end
+			
+			if isDeco3D and (p == 'model' or p == 'texture') and type(newValue) == 'string' and newValue ~= deco[p] then
+				local texName
+				if p == 'model' then
+					local te = latestEventWith(events, 'texture', self.editorBeat)
+					texName = te and te.texture
+				end
+				if not self:ensureAssetLoaded(p, newValue, texName) then
+					self:reportProblem(p == 'model' and 'Model' or 'Texture', k .. ':' .. p,
+						'"' .. tostring(v.id) .. '": ' .. p .. ' "' .. newValue .. '" failed to load: '
+						.. tostring(self.failedAssets[p .. ':' .. newValue]),
+						propEvents[#propEvents], 'keyframe')
+					newValue = deco[p]
+				end
+			end
+			
+			deco._spawnTime = isFirstOfID and propEvents[#propEvents].time or deco._spawnTime or 0
+			deco[p] = newValue
+			
+			if p == "parentid" and type(newValue) == 'string' and newValue ~= '' then
+				local msg
+				if newValue == v.id then
+					msg = 'parentid "' .. newValue .. '" is the deco itself'
+				elseif not self:getDefinedDecoIds()[newValue] then
+					msg = 'parentid "' .. newValue .. '" doesn\'t exist'
+				end
+				if msg then
+					self:reportProblem('Parent', k, '"' .. tostring(v.id) .. '": ' .. msg,
+						propEvents[#propEvents], 'keyframe')
+				end
+			end
+			
+			if p == "hide" then
+				deco._trueHide = newValue
+			end
+			::nextprop::
+		end
+		
+		if not isDeco3D then
+			local cev = latestEventWith(events, 'canvas', self.editorBeat) or v.events[1]
+			self:applyRenderCanvas(deco, deco.canvas, cev, 'keyframe', '"' .. tostring(v.id) .. '"')
+		end
+		
+		if isText or isCamera3D or isDeco3D then
+			local ok, err = pcall(deco.updateSprite, deco)
+			if not ok then
+				local cat = isDeco3D and '3D' or (isText and 'Text' or 'Camera')
+				local detail = ''
+				local errSrc
+				if isDeco3D then
+					detail = ' (model "' .. tostring(deco.model) .. '", texture "' .. tostring(deco.texture) .. '")'
+					errSrc = latestEventWith(events, 'model', self.editorBeat)
+						or latestEventWith(events, 'texture', self.editorBeat)
+				end
+				self:reportProblem(cat, k .. ':load',
+					'"' .. tostring(v.id) .. '" failed to update' .. detail .. ': ' .. tostring(err),
+					errSrc or v.events[1], 'keyframe')
+			end
+		else
+			if spriteChanged or deco.sprite == '' or not deco.hasMoved then
+				self:updateDecoSprite(deco)
+				local ok, err = pcall(deco.updateSprite, deco)
+				if not ok then
+					self:reportProblem('Sprite', k,
+						'"' .. tostring(v.id) .. '": sprite "' .. tostring(deco.sprite) .. '" failed: ' .. tostring(err),
+						latestEventWith(events, 'sprite', self.editorBeat) or v.events[1], 'keyframe')
+					deco.spr = sprites.cat
+				end
+			end
+		end
+		
+		-- i looked deeper into it
+		
+		deco.hide = deco._trueHide
+		if self.minLayer and deco.layer and deco.layer < self.minLayer then
+			deco.hide = true
+		end
+		if self.maxLayer and deco.layer and self.maxLayer < deco.layer then
+			deco.hide = true
+		end
+		if deco.drawLayer == 'ontop' then
+			if self.showOnTop then
+				deco.hide = deco._trueHide
+			else
+				deco.hide = true
+			end
+		end
+		
+		self.renderDecos[k] = deco
+		::continue::
+	end
+	
+	for _, camObj in pairs(self.vfx.camera3d) do
+		camObj.models = {}
+	end
+	for k, v in pairs(self.decos) do
+		if v.kind == "deco3d" then
+			local deco = self.renderDecos[k]
+			if deco and deco.camera and deco.camera ~= '' then
+				local camObj = self.vfx.camera3d[deco.camera]
+				if camObj then
+					camObj.models[k:sub(8)] = true
+				else
+					local src
+					for _, e in ipairs(self:getKeyframeInstances(k, v)) do
+						if e.camera ~= nil and e.time <= self.editorBeat then src = e end
+					end
+					self:reportProblem('3D', k, 'deco3d "' .. tostring(v.id) .. '": camera "' .. deco.camera .. '" doesn\'t exist', src, 'keyframe')
+				end
+			end
+		end
+	end
+	
+	self:updateAdvanceTextDecos()
+end
+
+-- drawing
+function st:drawGrid(bgc)
+	if self.gridScale and self.gridScale > 0 then
+		love.graphics.setLineWidth(1)
+		local s = self.gridScale
+		
+		love.graphics.setColor(math.abs(bgc.r/255 - 0.15),math.abs(bgc.g/255 - 0.15),math.abs(bgc.b/255 - 0.15), 1)
+		
+		local offsetX = -self.pan[1] % s
+		local offsetY = -self.pan[2] % s
+		
+		for x = offsetX, 600, s do
+			love.graphics.line(x, 0, x, 360)
+		end
+		
+		for y = offsetY, 360, s do
+			love.graphics.line(0, y, 600, y)
+		end
+	end
+end
+
+function st:drawOtherDecos(exclude)
+	if not self.showOtherDecosWhileEditing then return end
+	love.graphics.setColor(1, 1, 1, 0.5)
+	for _, v in pairs(self.renderDecos) do
+		if not v.hide and v ~= exclude and v.kind ~= 'deco3d' and v.kind ~= 'camera3d' and (not v.parentid or v.parentid == '') then
+			v.originalX, v.originalY = v.x, v.y
+			v.x, v.y = v.originalX - self.pan[1], v.originalY - self.pan[2]
+			v:drawSprite()
+			v.x, v.y = v.originalX, v.originalY
+		end
+	end
+	love.graphics.setColor(1, 1, 1, 1)
+end
+
+-- state stuff
 st:setUpdate(function(self, dt)
-	self.instanceCache = {}
 	self:clearProblems()
+	self:reportLoadProblems()
+	
+	if self.editorBeat < (self.lastEditorBeat or self.editorBeat) - 0.0001 then
+		self:rebuildDecoObjects()
+	end
+	
 	self.p.x = 300
 	self.p.y = 180
 	
@@ -1639,14 +2556,9 @@ st:setUpdate(function(self, dt)
 	self:updateSetBooleans()
 	
 	self:updatePlayer()
+	self:updatePlayerEdits()
 	self.p.x = self.p._actualX - self.pan[1]
 	self.p.y = self.p._actualY - self.pan[2]
-	
-	if self.editorBeat < (self.lastEditorBeat or self.editorBeat) - 0.0001 then
-		self:updateCanvs()
-		self:rebuildDecoObjects()
-	end
-	self.lastEditorBeat = self.editorBeat
 	
 	if self.isPlaying then
 		self.level.bpm = self:getBPMAtBeat(self.editorBeat)
@@ -1657,14 +2569,17 @@ st:setUpdate(function(self, dt)
 			self.unchangedEditorBeat = self.unchangedEditorBeat + (self.level.bpm/60) * love.timer.getDelta()
 			self.editorBeat = self.unchangedEditorBeat + self:getRetimeOffset(self.unchangedEditorBeat)
 		end
-		self.cBeat = self.editorBeat
 		self.timelineScroll = self.editorBeat - 50/self.beatSize
 		
-		self:updateCanvs()
 		for _, v in pairs(self.decoObjects) do
 			v:update(dt)
 		end
 	end
+	self.cBeat = self.editorBeat
+	
+	self:updateCanvs()
+	self:updateEditCanvases()
+	self.lastEditorBeat = self.editorBeat
 	
 	if not imgui.love.GetWantCaptureMouse() then
 		if maininput:pressed("mouse3") and not self.isPanning then
@@ -1694,16 +2609,10 @@ st:setUpdate(function(self, dt)
 			end
 			ev.id = id
 		end
+		self.placeEvent = ''
 		self.cmd:executeNew(cmd.CreateEvent, ev)
 		
-		local isMarker = self.markerColors[ev.type] ~= nil
-		if isMarker then
-			self:resetMarkers()
-		else
-			self:resetDecoEvents(ev.type, ev.id)
-		end
-		
-		self:selectSingle(isMarker and 'marker' or 'keyframe', ev)
+		self:onEventCreated(ev)
 		self.placeEvent = ''
 	elseif self.placeEvent ~= '' then
 		local ev = nil
@@ -1714,16 +2623,10 @@ st:setUpdate(function(self, dt)
 			end
 		end
 		if type(ev) == 'table' and Event.info[ev.type] then
+			self.placeEvent = ''
 			self.cmd:executeNew(cmd.CreateEvent, ev)
 			-- i dont expect it not to be a marker, but better safe than sorry
-			local isMarker = self.markerColors[ev.type] ~= nil
-			if isMarker then
-				self:resetMarkers()
-			else
-				self:resetDecoEvents(ev.type, ev.id)
-			end
-			
-			self:selectSingle(isMarker and 'marker' or 'keyframe', ev)
+			self:onEventCreated(ev)
 		end
 		
 		self.placeEvent = ''
@@ -1739,15 +2642,6 @@ st:setUpdate(function(self, dt)
 	
 end)
 
-function st:setModMenuEnabled(k, name, value)
-	self.enabledModEMenus[k] = self.enabledModEMenus[k] or {}
-	if self.enabledModEMenus[k][name] ~= value then
-		self.enabledModEMenus[k][name] = value
-		keyedConfig.enabledModEMenus = self.enabledModEMenus
-		bbp.utils.saveConfig("keyed")
-	end
-end
-
 function st:imgui()
 	local inputFlag = nil
 	local window_flag = 'ImGuiCond_FirstUseEver'
@@ -1756,6 +2650,7 @@ function st:imgui()
 		self.resetwindows = false
 	end
 	
+	-- mod menus
 	for k, menus in pairs(self.enabledModEMenus) do
 		for name, enabled in pairs(menus) do
 			if enabled then
@@ -1772,6 +2667,7 @@ function st:imgui()
 		end
 	end
 	
+	-- event editor
 	helpers.SetNextWindowPos(950, 50, window_flag)
 	helpers.SetNextWindowSize(250, 450, window_flag)
 	imgui.Begin("Event Editor##keyframer",nil,inputFlag) -- todo: make thses use cmd.ModifyKeys
@@ -2004,12 +2900,24 @@ function st:imgui()
 				end
 				imgui.Separator()
 				
+				local reloaded = false
 				for _, v in ipairs(reloadOnChange) do
 					if old[v] ~= selectedEvent[v] and not (v == 'id' and selectedEvent[v] == '') then
 						self:resetLoads()
+						reloaded = true
+						break
 					end
 				end
+				if not reloaded and reloadOnEditTypes[selectedEvent.type] and shallowDiffers(old, selectedEvent) then
+					self:resetLoads()
+				end
 				
+				if old.time ~= selectedEvent.time and not reloaded then
+					self:resortEvents()
+				end
+				if timingTypes[selectedEvent.type] and shallowDiffers(old, selectedEvent) then
+					self:rebuildTimingInfo()
+				end
 				if imgui.Button('Delete event') then
 					self:deleteSelectedEvents()
 				end
@@ -2022,6 +2930,7 @@ function st:imgui()
 		
 	imgui.End()
 	
+	-- event palette
 	helpers.SetNextWindowPos(0, 50, window_flag)
 	helpers.SetNextWindowSize(250, 450, window_flag)
 	imgui.Begin("Event Palette ##keyframer",nil,inputFlag)
@@ -2032,16 +2941,19 @@ function st:imgui()
 		local size =  imgui.GetContentRegionAvail()
 		if imgui.BeginListBox("##palette", size) then
 			self.placeEvent = helpers.BuildTree(self.eventPalette, self.placeEvent or '', self.paletteSearch)
+			imgui.EndListBox()
 		end
 	imgui.End()
 	
+	-- timeline
 	helpers.SetNextWindowPos(470, 500, window_flag)
 	helpers.SetNextWindowSize(730, 220, window_flag)
 	imgui.Begin("Timeline ##keyframer",nil,inputFlag)
 		local drawlist = imgui.GetWindowDrawList()
 		
 		local function snapBeat(b)
-			local subdiv = self:getBeatSnapValue() or 1
+			local subdiv = self:getBeatSnapValue()
+			if not subdiv then return b end -- snap is none
 			return math.floor(b * subdiv + 0.5) / subdiv
 		end
 		local function clampedSnap(b)
@@ -2176,7 +3088,7 @@ function st:imgui()
 			if x >= trackX and x <= trackX + trackAreaW then
 				line(x, cursor.y, x, cursor.y + rulerH, lineHiC, 1)
 				text(x + 3, cursor.y + 2, textC, string.format("%db", b))
-				if beatSize > 40 then
+				if beatSize > 40 and self:getBeatSnapValue() then
 					for q = 1, self:getBeatSnapValue() do
 						local qx = beatToX(b + q * 1/self:getBeatSnapValue())
 						if qx >= trackX and qx <= trackX + trackAreaW then
@@ -2456,7 +3368,7 @@ function st:imgui()
 					end
 					
 					for _, r in ipairs(rows) do
-						table.sort(r.events, eventSort)
+						sortEvents(r.events)
 					end
 				elseif self.selectBoxActive and imgui.IsMouseDragging(0) then
 					self.selectBoxEndX, self.selectBoxEndY = mx, my
@@ -2514,7 +3426,7 @@ function st:imgui()
 				if io.KeyCtrl then
 					self.beatSize = math.max(10, beatSize + wheel * 10)
 				elseif io.KeyShift then
-					self.timelineRowScroll = helpers.clamp(rowScroll - wheel, 0, #rows - visible_rows + 2)
+					self.timelineRowScroll = helpers.clamp(rowScroll - wheel, 0, math.max(0, #rows - visible_rows + 2))
 				else
 					self.timelineScroll = math.max(-8, scroll - wheel * 0.5 * (30 / beatSize)^0.75)
 				end
@@ -2522,6 +3434,7 @@ function st:imgui()
 		end
 	imgui.End()
 	
+	-- settings
 	helpers.SetNextWindowPos(0, 500, window_flag)
 	helpers.SetNextWindowSize(250, 220, window_flag)
 	imgui.Begin("Settings ##keyframer",nil,inputFlag)
@@ -2531,11 +3444,11 @@ function st:imgui()
 					self.rateMod, 0.25, 2)
 				self.rateMod = math.floor(self.rateMod * 20 + 0.5) / 20
 				if imgui.IsItemActive() and self.isPlaying and self.source then
-					self.source:setPitch(cs.rateMod)
+					self.source:setPitch(self.rateMod)
 				end
 				
 				local beatSnapText = 'None'
-
+				
 				if imgui.Button('-##beatminus') then
 					self.beatSnap = self.beatSnap - 1
 				end
@@ -2543,17 +3456,17 @@ function st:imgui()
 				if imgui.Button('+##beatplus') then
 					self.beatSnap = self.beatSnap + 1
 				end
-
+				
 				if self.beatSnap == -2 then
 					self.beatSnap = #self.beatSnapValues
 				elseif self.beatSnap > #self.beatSnapValues then
 					self.beatSnap = -1
 				end
-
+				
 				if self.beatSnap ~= 0 then
 					beatSnapText = '1/' .. self:getBeatSnapValue()
 				end
-
+				
 				imgui.SameLine()
 				if self.beatSnap == -1 then
 					imgui.Text("Beat Snap: 1/")
@@ -2669,7 +3582,7 @@ function st:imgui()
 		end
 	imgui.End()
 	
-	if self.showProblems then
+	if self.showProblems then --problems, i have a bunch of them
 		helpers.SetNextWindowPos(250, 500, window_flag)
 		helpers.SetNextWindowSize(220, 220, window_flag)
 		local count = #self.problemList
@@ -2763,7 +3676,7 @@ function st:imgui()
 			imgui.Text("Do you wish to save changes?")
 			if imgui.Button("Yes") then
 				LevelManager:saveLevel(self.level, cLevel, true, self.variant)
-				self:leave()
+				wantsLeave = true
 			end
 			imgui.SameLine()
 			if imgui.Button("No") then
@@ -2777,479 +3690,11 @@ function st:imgui()
 	end
 end
 
-local function parseSprite(sprite)
-	local template = sprite:match("([%w/%s]+)[!@#]")
-	local animation = sprite:match("!(%w+)")
-	local frame = sprite:match("#(%w+)")
-	local speed = sprite:match("@(%w+)")
-	if speed and (not animation) then
-		animation = 'all'
-	end
-	return template, animation, frame, speed
-end
-
-function st:assetBasePath(name)
-	if name:sub(1, 1) == '~' then
-		local sub = name:sub(2)
-		local file = 'levels/' .. sub
-		if love.filesystem.getInfo(file) then
-			local real = love.filesystem.getRealDirectory(file)
-			if real and helpers.startswith(real, love.filesystem.getSaveDirectory()) then
-				return 'levels/', sub, 'attempted to access file outside game source'
-			end
-		end
-		return 'levels/', sub
-	end
-	return cLevel, name
-end
-
-function st:ensureAssetLoaded(kind, name, texName)
-	if type(name) ~= 'string' or name == '' then return true end
-	if kind == 'texture' and name:sub(1, 1) == '@' then return true end
-	
-	local store = (kind == 'texture') and self.vfx.textures or self.vfx.models
-	if store[name] then return true end
-	
-	local key = kind .. ':' .. name
-	if self.failedAssets[key] then return false end
-	
-	local path, field, blocked = self:assetBasePath(name)
-	local ok, err = pcall(function()
-		if blocked then error(blocked) end
-		local fpath = path .. field
-		if kind == 'texture' then
-			store[name] = love.graphics.newImage(fpath)
-		else
-			local tex = Deco3D.static.defaultTexture
-			if texName then
-				tex = self.vfx.textures[texName] or tex
-			end
-			store[name] = g3d.newModel(fpath, tex, {0, 1, 0}, nil, 1)
-		end
-	end)
-	
-	if not ok then
-		self.failedAssets[key] = tostring(err)
-		log('Could not load deco3d ' .. kind .. ' "' .. name .. '"', 'keditor')
-		return false
-	end
-	return true
-end
-
-function st:ensureSpriteLoaded(sprite)
-	if type(sprite) ~= 'string' or sprite == '' then
-		return true
-	end
-	
-	if sprite:sub(1, 1) == '@' then
-		local vfx = self.vfx
-		if sprite:sub(1, 4) == '@aft' then
-			return (vfx.aft and vfx.aft[sprite:sub(5)]) ~= nil
-		elseif sprite:sub(1, 6) == '@stamp' then
-			return (vfx.stampCanvases and vfx.stampCanvases[sprite:sub(7)]) ~= nil
-		elseif sprite:sub(1, 7) == '@canvas' then
-			return (vfx.canvas and vfx.canvas[sprite:sub(8)]) ~= nil
-		end
-		return true
-	end
-	
-	if self.failedSprites[sprite] then
-		return false
-	end
-	
-	local template, animation, frame = parseSprite(sprite)
-	local path, field, blocked = self:assetBasePath(sprite)
-	local ok, err = pcall(function()
-		if blocked then error(blocked) end
-		if not template then
-			if not self.vfx.decoSprites[sprite] then
-				self.vfx.decoSprites[sprite] = love.graphics.newImage(path .. field)
-			end
-		else
-			if not self.vfx.decoTemplates[template] then
-				self.vfx.decoTemplates[template] = ez.newjson(path .. template)
-			end
-			local inst = self.vfx.decoTemplates[template]:instance()
-			if animation then
-				inst:play(animation, tonumber(frame))
-			end
-		end
-	end)
-	
-	if not ok then
-		self.failedSprites[sprite] = tostring(err)
-		log('Could not load deco sprite "' .. sprite .. '"', 'keditor')
-		return false
-	end
-	return true
-end
-
-function st:updateDecoSprite(deco)
-	local sprite = deco.sprite
-	local template, animation, frame, speed = nil, nil, nil, nil
-	
-	if sprite ~= nil and sprite ~= '' and string.sub(sprite, 1, 1) ~= '@' then
-		if not self:ensureSpriteLoaded(sprite) then
-			return false
-		end
-		template, animation, frame, speed = parseSprite(sprite)
-	end
-	
-	if template and self.vfx.decoTemplates[template] then
-		deco.anim = self.vfx.decoTemplates[template]:instance()
-		if animation then
-			deco.anim:play(animation, tonumber(frame))
-			deco.animSpeed = tonumber(speed)
-			deco.animFrame = nil
-		else
-			deco.animSpeed = nil
-			
-			local f = frame
-			if f == 'RANDOM' then
-				f = ((deco.animFrame or 0) + math.random(1, self.vfx.decoTemplates[template].frames - 1)) % self.vfx.decoTemplates[template].frames
-			elseif f == 'TRUERANDOM' then
-				f = math.random(0, self.vfx.decoTemplates[template].frames - 1)
-			end
-			
-			deco.animFrame = tonumber(f)
-		end
-	else
-		deco.anim = nil
-		deco.animSpeed = nil
-		deco.animFrame = nil
-	end
-	return true
-end
-
-function st:updateAdvanceTextDecos()
-	local lastTextSetTime = {}
-	for k, v in pairs(self.decos) do
-		if v.kind == "textdeco" then
-			local latest = nil
-			for _, e in ipairs(self:getKeyframeInstances(k, v)) do
-				if e.textString ~= nil and e.time <= self.editorBeat then
-					if not latest or e.time > latest then
-						latest = e.time
-					end
-				end
-			end
-			lastTextSetTime[k] = latest or -math.huge
-		end
-	end
-	
-	local advanceCount = {}
-	
-	local function addTrigger(rawId, triggerTime)
-		local key = "textdeco:" .. rawId
-		local cutoff = lastTextSetTime[key]
-		if cutoff and triggerTime > cutoff then
-			advanceCount[key] = (advanceCount[key] or 0) + 1
-		end
-	end
-
-	local advanceMarkers = self:getMarkerInstances('advancetextdeco')
-	if advanceMarkers then
-		for _, m in ipairs(advanceMarkers) do
-			local t = m.time
-			if t <= self.editorBeat then
-				helpers.targetDecosUsingSyntaxicID(function(rawId)
-					addTrigger(rawId, t)
-				end, m.id)
-			end
-		end
-	end
-	
-	for k, deco in pairs(self.decoObjects) do
-		if deco.kind == "textdeco" and deco.textTable and #deco.textTable > 0 then
-			local target = math.min(1 + (advanceCount[k] or 0), #deco.textTable)
-			
-			local text = ""
-			for i = 1, target do
-				text = text .. deco.textTable[i]
-			end
-			
-			deco.textPos = target
-			deco.text = text
-		end
-	end
-end
-
-
-local instantPropsDeco = {
-	drawOrder = true,
-	recolor = true,
-}
-local instantPropsText = {
-	drawOrder = true,
-	recolor = true,
-	colour = true,
-	specialcolour = true,
-}
-local instantPropsCamera3D = {
-	drawOrder = true,
-}
-local instantPropsDeco3D = {
-	-- nothing
-}
-
-local function latestEventWith(events, prop, beat)
-	local found
-	for _, e in ipairs(events) do
-		if e[prop] ~= nil and e.time <= beat then found = e end
-	end
-	return found
-end
-
-function st:updateDecos()
-	self.renderDecos = self.renderDecos or {}
-	for k, v in pairs(self.decos) do -- will probably need to sort when tags are not ignored
-		if v.id == nil or v.id == '' then 
-			self:reportProblem('Deco', k, 'a deco keyframe has no id', v.events[1], 'keyframe')
-		end
-		if #v.events == 0 or self.editorBeat < v.events[1].time then
-			self.renderDecos[k] = nil
-			goto continue
-		end
-		
-		local isFirstOfID = false
-		local isText = v.kind == "textdeco"
-		local isCamera3D = v.kind == "camera3d"
-		local isDeco3D = v.kind == "deco3d"
-		
-		if not self.decoObjects[k] then
-			if isText then
-				self.decoObjects[k] = em.init('TextDeco', {})
-				self.decoObjects[k].kind = "textdeco"
-				self.vfx.textdeco[k:sub(10)] = self.decoObjects[k]
-			elseif isCamera3D then
-				self.decoObjects[k] = em.init('Camera3D', {})
-				self.decoObjects[k].kind = "camera3d"
-				self.vfx.camera3d[k:sub(10)] = self.decoObjects[k]
-			elseif isDeco3D then
-				self.decoObjects[k] = em.init('Deco3D', {})
-				self.decoObjects[k].kind = "deco3d"
-				self.vfx.deco3d[k:sub(8)] = self.decoObjects[k]
-			else
-				self.decoObjects[k] = em.init('Deco', {})
-				self.decoObjects[k].kind = "deco"
-				self.vfx.deco[k:sub(6)] = self.decoObjects[k]
-			end
-			
-			isFirstOfID = true
-		end
-		
-		local deco = self.decoObjects[k]
-		deco.skipUpdate = true
-		deco.skipRender = isDeco3D
-		
-		local instantProps = isText and instantPropsText
-			or isCamera3D and instantPropsCamera3D
-			or isDeco3D and instantPropsDeco3D
-			or instantPropsDeco
-		
-		local props = isText
-			and {'x','y','sx','sy','rotationinfluence','scaleinfluence','wrapLen','kx','ky','extraCharSpacing','r','kyFake',
-				'ditherpercent','drawLayer','drawOrder','recolor','outline','effectCanvas','effectCanvasRaw','hide','parentid',
-				'rotationMode','onlyScaleDistance','colour','justification', 'justificationy','font','alphadither','textString','localize',
-				'specialoutline','specialcolour','canvas','prefix'}
-			or isCamera3D and {'cx','cy','cz','tx','ty','tz','lookRadius','aspectRatio','fov','drawLayer','drawOrder','hide','canvas'}
-			or isDeco3D and {'x','y','z','sx','sy','sz','rx','ry','rz','model','texture','hide','camera','shader','cullMode'}
-			or  {'x','y','r','sx','sy','ox','oy','kx','ky', 'rotationinfluence','scaleinfluence','uvx','uvy','uvdx','uvdy',
-				 'ecRecolorR','ecRecolorG','ecRecolorB','ecRecolorA', 'sprite', 'drawLayer', 'drawOrder',
-				 'recolor', 'outline', 'effectCanvas', 'effectCanvasRaw','effectCanvasType', 'hide', 'parentid', 'rotationMode',
-				 'onlyScaleDistance','mirror','tiling', 'colordither','exclusiveMirror','shader', 'alphadither', 'ditherpercent'}
-		
-		if isFirstOfID then
-			deco._baseProps = {}
-			for _, p in ipairs(props) do
-				deco._baseProps[p] = deco[p]
-			end
-			deco._trueHide = deco._baseProps['hide']
-		end
-		
-		local spriteChanged = false
-		local events = self:getKeyframeInstances(k, v) -- keyframes with repeats expanded
-		
-		for _, p in ipairs(props) do
-			if (p == "uvx" or p == "uvy") and deco.tiling then
-				goto nextprop
-			end
-			
-			local propEvents = {}
-			for _, e in ipairs(events) do
-				if e[p] ~= nil and e.time <= self.editorBeat then
-					table.insert(propEvents, e)
-				end
-			end
-			if #propEvents == 0 then goto nextprop end
-			
-			local isInstantProp = instantProps[p]
-			local firstEvent = v.events[1]
-			
-			local newValue = resolveEasedValue(propEvents, function(e) return e[p] end,
-				deco._baseProps[p], self.editorBeat, {allowAdd = not isInstantProp, instant = function(e)
-					return isInstantProp or (e == firstEvent)
-				end})
-			
-			if p == "sprite" and newValue ~= deco.sprite then
-				if self:ensureSpriteLoaded(newValue) then
-					spriteChanged = true
-				else
-					self:reportProblem('Sprite', k,
-						'"' .. tostring(v.id) .. '": sprite "' .. tostring(newValue) .. '" failed to load'
-						.. (self.failedSprites[newValue] and (': ' .. self.failedSprites[newValue]) or ''),
-						propEvents[#propEvents], 'keyframe')
-					newValue = deco.sprite
-				end
-			end
-			
-			if isDeco3D and (p == 'model' or p == 'texture') and type(newValue) == 'string' and newValue ~= deco[p] then
-				local texName
-				if p == 'model' then
-					local te = latestEventWith(events, 'texture', self.editorBeat)
-					texName = te and te.texture
-				end
-				if not self:ensureAssetLoaded(p, newValue, texName) then
-					self:reportProblem(p == 'model' and 'Model' or 'Texture', k .. ':' .. p,
-						'"' .. tostring(v.id) .. '": ' .. p .. ' "' .. newValue .. '" failed to load: '
-						.. tostring(self.failedAssets[p .. ':' .. newValue]),
-						propEvents[#propEvents], 'keyframe')
-					newValue = deco[p]
-				end
-			end
-			
-			deco._spawnTime = isFirstOfID and propEvents[#propEvents].time or deco._spawnTime or 0
-			deco[p] = newValue
-			
-			if p == "parentid" and type(newValue) == 'string' and newValue ~= '' then
-				local msg
-				if newValue == v.id then
-					msg = 'parentid "' .. newValue .. '" is the deco itself'
-				elseif not self:getDefinedDecoIds()[newValue] then
-					msg = 'parentid "' .. newValue .. '" doesn\'t exist'
-				end
-				if msg then
-					self:reportProblem('Parent', k, '"' .. tostring(v.id) .. '": ' .. msg,
-						propEvents[#propEvents], 'keyframe')
-				end
-			end
-			
-			if p == "hide" then
-				deco._trueHide = newValue
-			end
-			::nextprop::
-		end
-		
-		if isText or isCamera3D or isDeco3D then
-			if isCamera3D then
-				Event.setCanvas(deco.canvas or '', deco)
-			end
-			local ok, err = pcall(deco.updateSprite, deco)
-			if not ok then
-				local cat = isDeco3D and '3D' or (isText and 'Text' or 'Camera')
-				local detail = ''
-				local errSrc
-				if isDeco3D then
-					detail = ' (model "' .. tostring(deco.model) .. '", texture "' .. tostring(deco.texture) .. '")'
-					errSrc = latestEventWith(events, 'model', self.editorBeat)
-						or latestEventWith(events, 'texture', self.editorBeat)
-				end
-				self:reportProblem(cat, k .. ':load',
-					'"' .. tostring(v.id) .. '" failed to update' .. detail .. ': ' .. tostring(err),
-					errSrc or v.events[1], 'keyframe')
-			end
-		else
-			if spriteChanged or deco.spr == nil then
-				self:updateDecoSprite(deco)
-				deco:updateSprite()
-			end
-		end
-		
-		-- for some reason the default cat doesn't show until you put a sprite that doesn't exist
-		-- i should look deeper into it
-		
-		deco.hide = deco._trueHide
-		if self.minLayer and deco.layer < self.minLayer then
-			deco.hide = true
-		end
-		if self.maxLayer and self.maxLayer < deco.layer then
-			deco.hide = true
-		end
-		if deco.drawLayer == 'ontop' then
-			if self.showOnTop then
-				deco.hide = deco._trueHide
-			else
-				deco.hide = true
-			end
-		end
-		
-		self.renderDecos[k] = deco
-		::continue::
-	end
-	
-	for _, camObj in pairs(self.vfx.camera3d) do
-		camObj.models = {}
-	end
-	for k, v in pairs(self.decos) do
-		if v.kind == "deco3d" then
-			local deco = self.renderDecos[k]
-			if deco and deco.camera and deco.camera ~= '' then
-				local camObj = self.vfx.camera3d[deco.camera]
-				if camObj then
-					camObj.models[k:sub(8)] = true
-				else
-					local src
-					for _, e in ipairs(self:getKeyframeInstances(k, v)) do
-						if e.camera ~= nil and e.time <= self.editorBeat then src = e end
-					end
-					self:reportProblem('3D', k, 'deco3d "' .. tostring(v.id) .. '": camera "' .. deco.camera .. '" doesn\'t exist', src, 'keyframe')
-				end
-			end
-		end
-	end
-	
-	self:updateAdvanceTextDecos()
-end
-
-function st:drawGrid(bgc)
-	if cs.gridScale and cs.gridScale > 0 then
-		love.graphics.setLineWidth(1)
-		local s = cs.gridScale
-		
-		love.graphics.setColor(math.abs(bgc.r/255 - 0.15),math.abs(bgc.g/255 - 0.15),math.abs(bgc.b/255 - 0.15), 1)
-		
-		local offsetX = -cs.pan[1] % s
-		local offsetY = -cs.pan[2] % s
-		
-		for x = offsetX, 600, s do
-			love.graphics.line(x, 0, x, 360)
-		end
-		
-		for y = offsetY, 360, s do
-			love.graphics.line(0, y, 600, y)
-		end
-	end
-end
-
-function st:drawOtherDecos(exclude)
-	if not self.showOtherDecosWhileEditing then return end
-	love.graphics.setColor(1, 1, 1, 0.5)
-	for _, v in pairs(self.renderDecos) do
-		if not v.hide and v ~= exclude and v.kind ~= 'deco3d' and v.kind ~= 'camera3d' and (not v.parentid or v.parentid == '') then
-			v.originalX, v.originalY = v.x, v.y
-			v.x, v.y = v.originalX - self.pan[1], v.originalY - self.pan[2]
-			v:drawSprite()
-			v.x, v.y = v.originalX, v.originalY
-		end
-	end
-	love.graphics.setColor(1, 1, 1, 1)
-end
-
 st:setFgDraw(function(self) -- this is a mess
 	-- i think the grid and bg is no longer a mess
 	local palette = shuv.usePalette and shuv.pal or shuv.paldefault
-	local bgc = palette[cs.bgColor] or {r=255,g=255,b=255}
-	local vc = palette[cs.voidColor] or {r=255,g=255,b=255}
+	local bgc = palette[self.bgColor] or {r=255,g=255,b=255}
+	local vc = palette[self.voidColor] or {r=255,g=255,b=255}
 	if self.editMode ~= 'none' then
 		love.graphics.clear(vc.r/255, vc.g/255, vc.b/255)
 		self:drawGrid(bgc)
@@ -3258,18 +3703,20 @@ st:setFgDraw(function(self) -- this is a mess
 	local oldCanv = love.graphics.getCanvas()
 	love.graphics.setCanvas(self.canv)
 	
-	color(cs.voidColor)
+	color(self.voidColor)
 	love.graphics.rectangle('fill',0,0,project.res.x,project.res.y)
 	
-	color(cs.bgColor)
-	love.graphics.rectangle('fill',-cs.pan[1],-cs.pan[2],project.res.x,project.res.y)
+	color(self.bgColor)
+	love.graphics.rectangle('fill',-self.pan[1],-self.pan[2],project.res.x,project.res.y)
 	self:drawGrid(bgc)
 	
 	love.graphics.setCanvas(oldCanv)
 	
 	--yk i realize how fucking large this if statement is
+	local g3dRunning, blendBackup, blendAlphaBackup = false, nil, nil
 	local success, err = pcall(function()
 		if self.drawDecos and self.editMode == "none" then
+			self.cBeat = self.editorBeat
 			love.graphics.setColor(1, 1, 1, 1)
 			self:updateDecos()
 			for _, v in pairs(self.renderDecos) do
@@ -3319,22 +3766,23 @@ st:setFgDraw(function(self) -- this is a mess
 			if k == 'deco3d' then
 				local cameraObj = self.vfx.camera3d[dr.camera]
 				if not cameraObj then
-					error("Camera " .. dr.camera .. " doesn't exist")
+					error("Camera " .. tostring(dr.camera) .. " doesn't exist")
 				end
 				color()
 				local cCanvas = love.graphics.getCanvas()
 				love.graphics.setCanvas({cCanvas, depth = true})
-
-				local prevMode,prevAlpha = love.graphics.getBlendMode()
+				
+				blendBackup, blendAlphaBackup = love.graphics.getBlendMode()
 				love.graphics.setBlendMode('alpha','premultiplied')
-
+				
 				g3d.start()
+				g3dRunning = true
 				
 				love.graphics.clear(false,false,true)
 				
 				cameraObj.camera.fov = cameraObj.fov
 				cameraObj.camera.aspectRatio = cameraObj.aspectRatio
-
+				
 				g3d.camera.setCurrent(cameraObj.camera)
 				local tx,ty,tz = cameraObj.tx,cameraObj.ty,cameraObj.tz
 				cameraObj.camera:lookAt(cameraObj.cx,cameraObj.cy,cameraObj.cz,tx,ty,tz)
@@ -3483,7 +3931,6 @@ st:setFgDraw(function(self) -- this is a mess
 					end
 				end
 				
-				--draw the object
 				dr:draw()
 				
 				if self.showOtherDecosWhileEditing then
@@ -3498,8 +3945,9 @@ st:setFgDraw(function(self) -- this is a mess
 				end
 				
 				g3d.stop()
+				g3dRunning = false
 				color()
-				love.graphics.setBlendMode(prevMode,prevAlpha)
+				love.graphics.setBlendMode(blendBackup, blendAlphaBackup)
 				
 				if self.editMode == "move" and self.lockedAxis ~= "none" then
 					local axisColor = {1, 1, 1, 1}
@@ -3553,7 +4001,6 @@ st:setFgDraw(function(self) -- this is a mess
 				
 				love.graphics.setColor(1, 1, 1, 1)
 			else
-				--print(self.vfx.camera3d[er.id])
 				if self.vfx.camera3d[er.id] then
 					self.vfx.camera3d[er.id]:draw()
 				end
@@ -3711,6 +4158,11 @@ st:setFgDraw(function(self) -- this is a mess
 	if not success then
 		print("failed drawing deco", err)
 		self:reportProblem('Draw', 'draw', tostring(err))
+		if g3dRunning then
+			pcall(g3d.stop)
+			color()
+			love.graphics.setBlendMode(blendBackup, blendAlphaBackup)
+		end
 		love.graphics.setCanvas(oldCanv)
 		for _, v in pairs(self.renderDecos) do
 			if v.originalX then
@@ -3751,7 +4203,7 @@ st:setFgDraw(function(self) -- this is a mess
 		end
 	end
 	
-	if self.editMode == "none" then
+	if self.editMode == "none" and not maininput:down('alt') then
 		self:imgui()
 	end
 end)

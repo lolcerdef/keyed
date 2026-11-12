@@ -18,8 +18,9 @@
 - 3D decos
 - 3D camera
 - shader rendering
-- Canvases (maybe make it so that you can look at different canvases?)
+- Canvases / loading done (maybe make it so that you can look at different canvases?)
 - AFTs / done
+- Edit Player / done (sprite, face stencil, shader, canvas, layer)
 - Tags
 - Selecting decos / no
 - Selecting decos through viewport / no

@@ -27,6 +27,7 @@ return {
 			'ease',
 			'setBoolean',
 			'songNameOverride',
+			'forcePlayerSprite',
 			'playSound',
 		}
 	},
