@@ -3720,7 +3720,9 @@ st:setFgDraw(function(self) -- this is a mess
 			love.graphics.setColor(1, 1, 1, 1)
 			self:updateDecos()
 			for _, v in pairs(self.renderDecos) do
-				if v.kind ~= 'deco3d' and v.kind ~= 'camera3d' and (not v.parentid or v.parentid == '') then
+				if v.kind ~= 'deco3d' and v.kind ~= 'camera3d' and 
+					(not v.parentid or v.parentid == '') and
+					v.renderCanvasObject == nil then
 					v.originalX, v.originalY = v.x, v.y
 					v.x, v.y = v.originalX - self.pan[1], v.originalY - self.pan[2]
 				end
@@ -3752,7 +3754,9 @@ st:setFgDraw(function(self) -- this is a mess
 			end]]
 			
 			for _, v in pairs(self.renderDecos) do
-				if v.kind ~= 'deco3d' and v.kind ~= 'camera3d' and (not v.parentid or v.parentid == '') then
+				if v.kind ~= 'deco3d' and v.kind ~= 'camera3d' and 
+					(not v.parentid or v.parentid == '') and
+					v.renderCanvasObject == nil then
 					v.x, v.y = v.originalX, v.originalY
 				end
 			end
