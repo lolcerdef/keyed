@@ -128,3 +128,20 @@ if cs.name == 'Keyframer' then
 end
 '''
 match_indent = true
+
+[[patches]]
+[patches.pattern]
+target = "lib/entityman.lua"
+pattern = '''
+if inOutline then
+	Outline.stopOutline(cs.outline)
+end
+'''
+position = "after"
+payload = '''
+-- this fixed the bg in a canv preview being wrong until next event
+if renderCanvas then
+	love.graphics.setCanvas(nilCanvas)
+end
+'''
+match_indent = true

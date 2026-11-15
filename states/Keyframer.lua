@@ -419,13 +419,17 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	
 	self.drawHud = true
 	self.showOnTop = true
-	self.showOtherDecosWhileEditing = false
+	self.showOtherDecosWhileEditing = true
 	self.minLayer = nil
 	self.maxLayer = nil
 	
-	-- negative one means main canvas, other wise would be string to get a canvas
-	-- currently does nothing
-	self.currentCanvas = -1
+	self.currentCanvas = 'Main'
+	self.canvasSearch = ''
+	self.canvases = { -- currentCanvas -> 'Canvases/id' or 'Camera/id' or 'Main'
+		maincanv = 'Main',
+		Canvases = {},
+		Camera = {},
+	}
 	
 	self.editorBeat = beat or 0
 	self.lastEditorBeat = self.editorBeat
@@ -575,6 +579,11 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	
 	self.gridScale = 30
 	self.pan = {0,0}
+	self.panCam = g3d.camera.newCamera((project.res.x/project.res.y))
+	self.orbit = nil -- { tx, ty, tz, dist, yaw, pitch, key }
+	self.orbitDragging = false
+	self.orbitLastX = 0
+	self.orbitLastY = 0
 	
 	self.resetwindows = false
 	self.exitDialogue = false
@@ -744,6 +753,7 @@ st:setInit(function(self, level, variant, beat, preloadSoundData)
 	)
 	self:addKeybind(function()
 			self.pan = {0,0}
+			self.orbit = nil
 		end,
 		'reset pan position',
 		'shift', 'r'
@@ -1156,6 +1166,100 @@ function st:loadCanvases(defs)
 	end
 	
 	self.vfx.canvas = new
+	self.canvases = self.canvases or { maincanv = 'Main', Canvases = {}, Camera = {} }
+	self.canvases.Canvases = {}
+	for id in pairs(new) do
+		self.canvases.Canvases[id] = 'Canvases/' .. id
+	end
+	
+	local cur = self.currentCanvas
+	if type(cur) == 'string' and cur:sub(1, 9) == 'Canvases/' and not new[cur:sub(10)] then
+		self.currentCanvas = 'Main'
+	end
+end
+
+function st:collectCameras()
+	self.canvases = self.canvases or { maincanv = 'Main', Canvases = {}, Camera = {} }
+	local cams = {}
+	for id in pairs((self.vfx and self.vfx.camera3d) or {}) do
+		if type(id) == 'string' and id ~= '' then
+			cams[id] = 'Camera/' .. id
+		end
+	end
+	self.canvases.Camera = cams
+	
+	local cur = self.currentCanvas
+	if type(cur) == 'string' and cur:sub(1, 7) == 'Camera/' and not cams[cur:sub(8)] then
+		self.currentCanvas = 'Main'
+	end
+end
+
+function st:drawCanvasList(width, height)
+	local search = (self.canvasSearch or ''):lower()
+	local searching = search ~= ''
+	local function matches(name)
+		return not searching or name:lower():find(search, 1, true) ~= nil
+	end
+	
+	local function drawGroup(label, group, emptyText)
+		local ids = {}
+		for id in pairs(group or {}) do
+			if matches(id) then table.insert(ids, id) end
+		end
+		table.sort(ids)
+		
+		if searching then
+			if #ids == 0 then return false end
+			imgui.SetNextItemOpen(true, 'ImGuiCond_Always')
+		end
+		if imgui.TreeNode_Str(label .. ' (' .. #ids .. ')##canvasgroup_' .. label) then
+			for _, id in ipairs(ids) do
+				local key = group[id]
+				if imgui.Selectable_Bool(id .. '##' .. key, self.currentCanvas == key) then
+					self.currentCanvas = key
+					local camObj = self.vfx.camera3d[id]
+					if label == 'Camera' and camObj then
+						local cam = camObj.camera
+						self.panCam.fov = cam.fov
+						self.panCam.aspectRatio = cam.aspectRatio
+						self.panCam.position = helpers.copy(cam.position)
+						--self.panCam.direction = cam.direction
+						--self.panCam.pitch = cam.pitch
+						self.panCam:lookAt(camObj.cx,camObj.cy,camObj.cz,camObj.tx,camObj.ty,camObj.tz)
+					end
+				end
+				
+				if label == 'Canvases' and imgui.IsItemHovered() then
+					local c = self.vfx.canvas and self.vfx.canvas[id]
+					if c and imgui.BeginTooltip() then
+						imgui.Text(id .. ' (' .. tostring(c.width) .. 'x' .. tostring(c.height) .. ')')
+						imgui.EndTooltip()
+					end
+				end
+			end
+			if #ids == 0 then
+				imgui.TextDisabled(emptyText)
+			end
+			imgui.TreePop()
+		end
+		return #ids > 0
+	end
+	
+	if imgui.BeginListBox('##canvases', {width, height}) then
+		local any = false
+		if matches('Main') then
+			any = true
+			if imgui.Selectable_Bool('Main##canvas_main', self.currentCanvas == 'Main') then
+				self.currentCanvas = 'Main'
+			end
+		end
+		if drawGroup('Canvases', self.canvases.Canvases, 'No canvases') then any = true end
+		if drawGroup('Camera', self.canvases.Camera, 'No cameras') then any = true end
+		if searching and not any then
+			imgui.TextDisabled('Nothing matches')
+		end
+		imgui.EndListBox()
+	end
 end
 
 function st:resetMarkers()
@@ -1261,6 +1365,7 @@ function st:resetDecos()
 	
 	self.rowsDirty = true
 	self.definedDecoIds = nil
+	self:collectCameras()
 end
 
 function st:resetDecoEvents(decoType, decoId)
@@ -1629,6 +1734,10 @@ function st:setEditInfo()
 		end
 	end
 	self.editorBeat = endBeat
+	if endBeat < prevBeat - 0.0001 then
+		self:rebuildDecoObjects()
+	end
+	self.lastEditorBeat = self.editorBeat
 	
 	self:updateDecos()
 	
@@ -1646,6 +1755,7 @@ function st:setEditInfo()
 	
 	if not deco then
 		self.editorBeat = prevBeat
+		self.lastEditorBeat = prevBeat
 		print("couldn't find the deco to edit")
 		return false
 	end
@@ -1752,7 +1862,105 @@ function st:setModMenuEnabled(k, name, value)
 	end
 end
 
+-- 3d camera view orbit / pan
+local orbitSensitivity = 0.01
+local orbitMaxPitch = math.pi / 2 - 0.01
+
+function st:initOrbit(camObj)
+	local ox, oy, oz = camObj.cx - camObj.tx, camObj.cy - camObj.ty, camObj.cz - camObj.tz
+	local d = math.sqrt(ox * ox + oy * oy + oz * oz)
+	local yaw, pitch = 0, 0
+	if d < 0.0001 then
+		d = 1
+	else
+		yaw = math.atan2(oy, ox)
+		pitch = math.asin(helpers.clamp(oz / d, -1, 1))
+	end
+	self.orbit = {
+		tx = camObj.tx, ty = camObj.ty, tz = camObj.tz,
+		dist = d, yaw = yaw,
+		pitch = helpers.clamp(pitch, -orbitMaxPitch, orbitMaxPitch),
+		key = self.currentCanvas,
+	}
+	self:applyOrbit()
+end
+
+function st:applyOrbit()
+	local o = self.orbit
+	if not o then return end
+	local cp = math.cos(o.pitch)
+	self.panCam:lookAt(
+		o.tx + o.dist * cp * math.cos(o.yaw),
+		o.ty + o.dist * cp * math.sin(o.yaw),
+		o.tz + o.dist * math.sin(o.pitch),
+		o.tx, o.ty, o.tz)
+end
+
 -- things that update stuff
+
+function st:updateOrbit()
+	local kind, camObj = self:getSelectedCanvasInfo()
+	if kind ~= 'camera' or (self.editMode ~= 'none' and not self.editInfo.is3D) then
+		self.orbitDragging = false
+		return false
+	end
+	
+	if not self.orbit or self.orbit.key ~= self.currentCanvas then
+		self:initOrbit(camObj)
+	end
+	local o = self.orbit
+	
+	local wheel = mouse.sy or 0
+	if wheel ~= 0 and not imgui.love.GetWantCaptureMouse() then
+		o.dist = helpers.clamp(o.dist * (0.9 ^ wheel), 0.01, 100000)
+		self:applyOrbit()
+	end
+	
+	if not self.orbitDragging then
+		if not imgui.love.GetWantCaptureMouse() and maininput:pressed('mouse3') then
+			self.orbitDragging = true
+			self.orbitLastX, self.orbitLastY = mouse.rx, mouse.ry
+		end
+		return true
+	end
+	
+	if not maininput:down('mouse3') then
+		self.orbitDragging = false
+		return true
+	end
+	
+	local dx, dy = mouse.rx - self.orbitLastX, mouse.ry - self.orbitLastY
+	self.orbitLastX, self.orbitLastY = mouse.rx, mouse.ry
+	if dx == 0 and dy == 0 then return true end
+	
+	if maininput:down('shift') then
+		local ex, ey, ez = o.dist * math.cos(o.pitch) * math.cos(o.yaw),
+			o.dist * math.cos(o.pitch) * math.sin(o.yaw),
+			o.dist * math.sin(o.pitch)
+		local fx, fy, fz = -ex / o.dist, -ey / o.dist, -ez / o.dist
+		
+		local rx, ry = fy, -fx
+		local rlen = math.sqrt(rx * rx + ry * ry)
+		if rlen < 0.000001 then rx, ry, rlen = 1, 0, 1 end
+		rx, ry = rx / rlen, ry / rlen
+		local ux = ry * fz
+		local uy = -rx * fz
+		local uz = rx * fy - ry * fx
+		
+		local fov = camObj.fov or (math.pi / 2)
+		local k = 2 * o.dist * math.tan(fov / 2) / project.res.y
+		o.tx = o.tx - rx * dx * k + ux * dy * k
+		o.ty = o.ty - ry * dx * k + uy * dy * k
+		o.tz = o.tz + uz * dy * k
+	else
+		o.yaw = o.yaw - dx * orbitSensitivity
+		o.pitch = helpers.clamp(o.pitch + dy * orbitSensitivity, -orbitMaxPitch, orbitMaxPitch)
+	end
+	
+	self:applyOrbit()
+	return true
+end
+
 function st:setOutline()
 	self.outline = nil
 	local bestTime, bestOrder = -math.huge, 0
@@ -2504,6 +2712,10 @@ end
 
 -- drawing
 function st:drawGrid(bgc)
+	if self:getSelectedCanvasInfo() == 'camera' then 
+		return
+	end
+	
 	if self.gridScale and self.gridScale > 0 then
 		love.graphics.setLineWidth(1)
 		local s = self.gridScale
@@ -2521,6 +2733,48 @@ function st:drawGrid(bgc)
 			love.graphics.line(0, y, 600, y)
 		end
 	end
+end
+
+function st:getSelectedCanvasInfo()
+	local cur = self.currentCanvas
+	if type(cur) == 'string' then
+		if cur:sub(1, 9) == 'Canvases/' then
+			local c = self.vfx.canvas and self.vfx.canvas[cur:sub(10)]
+			if c then
+				return 'canvas', c, c.width, c.height
+			end
+		elseif cur:sub(1, 7) == 'Camera/' then
+			local c = self.vfx.camera3d and self.vfx.camera3d[cur:sub(8)]
+			if c then
+				return 'camera', c, project.res.x, project.res.y
+			end
+		elseif cur == 'Main' then
+			return 'main', nil, project.res.x, project.res.y
+		end
+	end
+	return nil, cur, project.res.x, project.res.y
+end
+
+function st:drawCheckerboard(x, y, w, h)
+	local s = (self.gridScale and self.gridScale > 0) and self.gridScale or 30
+	local sx, sy, sw, sh = love.graphics.getScissor()
+	love.graphics.intersectScissor(x, y, w, h)
+	
+	local cols = math.ceil(w / s)
+	local rows = math.ceil(h / s)
+	for i = 0, cols - 1 do
+		for j = 0, rows - 1 do
+			if (i + j) % 2 == 0 then
+				love.graphics.setColor(0.45, 0.45, 0.45, 1)
+			else
+				love.graphics.setColor(0.65, 0.65, 0.65, 1)
+			end
+			love.graphics.rectangle('fill', x + i * s, y + j * s, s, s)
+		end
+	end
+	
+	love.graphics.setScissor(sx, sy, sw, sh)
+	love.graphics.setColor(1, 1, 1, 1)
 end
 
 function st:drawOtherDecos(exclude)
@@ -2581,7 +2835,8 @@ st:setUpdate(function(self, dt)
 	self:updateEditCanvases()
 	self.lastEditorBeat = self.editorBeat
 	
-	if not imgui.love.GetWantCaptureMouse() then
+	local orbiting = self:updateOrbit()
+	if not orbiting and not imgui.love.GetWantCaptureMouse() then
 		if maininput:pressed("mouse3") and not self.isPanning then
 			self.isPanning = true
 			self.mouseStartX = mouse.rx + self.pan[1]
@@ -3521,32 +3776,15 @@ function st:imgui()
 					self.maxLayer = nil
 				end
 				
-				imgui.SeparatorText("Canvases")
-				-- cs.canvas (canvas objs), cs.vfx.stampCanvases (just a canvas), and thats it
-				--[[
-				local canvlist = {
-					Canvas = {},
-					StampCanvs = {}
-				}
-				canvlist[1] = "Main Canvas"
-				for k, _ in pairs(self.canvas) do
-					table.insert(canvlist.Canvas, k)
-				end
-				for k, _ in pairs(self.vfx.stampCanvas) do
-					table.insert(canvlist.StampCanvs, k)
-				end
+				imgui.SeparatorText("Viewports")
 				
 				imgui.Text("Search:")
 				imgui.SameLine()
 				self.canvasSearch = helpers.InputText("##canvasSearch", self.canvasSearch or '', 9999)
-				
-				local size =  imgui.GetContentRegionAvail()
-				if imgui.BeginListBox("##palette", size) then
-					self.currentCanvas = 
-				end]]
-				-- need to do some sort of thing like buildTree but for general stuff
-				--canvases would be here
-				
+				local size = imgui.GetContentRegionAvail()
+				self:drawCanvasList(size.x, 200)
+				-- canvases are here
+				-- print(self.currentCanvas)
 				imgui.EndTabItem()
 			end
 			
@@ -3691,6 +3929,7 @@ function st:imgui()
 end
 
 st:setFgDraw(function(self) -- this is a mess
+	local selKind, selCanvas, selW, selH = self:getSelectedCanvasInfo()
 	-- i think the grid and bg is no longer a mess
 	local palette = shuv.usePalette and shuv.pal or shuv.paldefault
 	local bgc = palette[self.bgColor] or {r=255,g=255,b=255}
@@ -3732,13 +3971,62 @@ st:setFgDraw(function(self) -- this is a mess
 				
 			love.graphics.setCanvas(shuv.canvas)
 			love.graphics.setColor(1, 1, 1, 1)
-
-			self.gm:startOnTopShader()
-			self.gm:drawCanv()
-			self.gm:endOnTopShader()
-			if self.vfx.onTopUI then
-				self.vfx.onTopUI = true
-				self.gm:drawHud()
+			
+			if selKind == 'main' then
+				self.gm:startOnTopShader()
+				self.gm:drawCanv()
+				self.gm:endOnTopShader()
+				if self.vfx.onTopUI then
+					self.vfx.onTopUI = true
+					self.gm:drawHud()
+				end
+			elseif selKind == 'canvas' then
+				love.graphics.setShader()
+				for _, tbl in ipairs({self.vfx.deco, self.vfx.textdeco}) do
+					for _, v in pairs(tbl) do
+						if v.drawLayer == 'ontop' and v.renderCanvasObject then
+							v:draw(true)
+						end
+					end
+				end
+				
+				love.graphics.setCanvas(shuv.canvas)
+				love.graphics.setColor(1, 1, 1, 1)
+				love.graphics.setBlendMode('alpha')
+				love.graphics.clear(vc.r/255, vc.g/255, vc.b/255)
+				local px, py = -self.pan[1], -self.pan[2]
+				if selCanvas.clearColor == -1 then
+					self:drawCheckerboard(px, py, selW, selH)
+				end
+				love.graphics.setColor(1, 1, 1, 1)
+				love.graphics.setBlendMode('alpha', 'premultiplied')
+				love.graphics.draw(selCanvas.c, px, py)
+				love.graphics.setBlendMode('alpha')
+			elseif selKind == 'camera' then
+				color()
+				local cCanvas = love.graphics.getCanvas()
+				love.graphics.setCanvas({cCanvas, depth = true})
+				local prevMode,prevAlpha = love.graphics.getBlendMode()
+				love.graphics.setBlendMode('alpha','premultiplied')
+				
+				g3d.start()
+				love.graphics.clear(false,false,true)
+				self.panCam.aspectRatio = selCanvas.aspectRatio
+				self.panCam.fov = selCanvas.fov
+				g3d.camera.setCurrent(self.panCam)
+				
+				for k,v in pairs(selCanvas.models) do
+					self.vfx.deco3d[k]:draw()
+				end
+				g3d.stop()
+				color()
+				love.graphics.setBlendMode(prevMode,prevAlpha)
+			else
+				love.graphics.clear(1,1,1)
+				color(1)
+				love.graphics.setFont(fonts.main)
+				love.graphics.printf(tostring(selCanvas) .. " doesn't exist at this beat!", 0, 172, 600, 'center')
+				color()
 			end
 			--[[
 			love.graphics.setShader()
@@ -3769,6 +4057,13 @@ st:setFgDraw(function(self) -- this is a mess
 			-- so much math :(
 			if k == 'deco3d' then
 				local cameraObj = self.vfx.camera3d[dr.camera]
+				local orbitView = selKind == 'camera'
+				if orbitView then
+					if not self.orbit then self:initOrbit(selCanvas) end
+					cameraObj = setmetatable(
+						{ camera = self.panCam, models = selCanvas.models },
+						{ __index = selCanvas })
+				end
 				if not cameraObj then
 					error("Camera " .. tostring(dr.camera) .. " doesn't exist")
 				end
@@ -3789,7 +4084,9 @@ st:setFgDraw(function(self) -- this is a mess
 				
 				g3d.camera.setCurrent(cameraObj.camera)
 				local tx,ty,tz = cameraObj.tx,cameraObj.ty,cameraObj.tz
-				cameraObj.camera:lookAt(cameraObj.cx,cameraObj.cy,cameraObj.cz,tx,ty,tz)
+				if not orbitView then
+					cameraObj.camera:lookAt(cameraObj.cx,cameraObj.cy,cameraObj.cz,tx,ty,tz)
+				end
 				
 				if self.editMode == "move" then
 					local cam = cameraObj.camera
@@ -4177,7 +4474,7 @@ st:setFgDraw(function(self) -- this is a mess
 	
 	love.graphics.setColor(.99, 0, 0)
 	love.graphics.setLineWidth(2)
-	love.graphics.rectangle("line", -self.pan[1] - 1, -self.pan[2] - 1, 602, 362)
+	love.graphics.rectangle("line", -self.pan[1] - 1, -self.pan[2] - 1, selW + 2, selH + 2)
 	
 	if not self.editInfo.is3D then
 		if self.editMode == 'move' then
